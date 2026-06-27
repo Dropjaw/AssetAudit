@@ -47,6 +47,12 @@ public class AssetEntity {
     @ColumnInfo(name = "status")
     public String status;
 
+    @ColumnInfo(name = "brand")
+    public String brand;
+
+    @ColumnInfo(name = "model")
+    public String model;
+
     @ColumnInfo(name = "site")
     public String site;
 
@@ -65,6 +71,12 @@ public class AssetEntity {
     @ColumnInfo(name = "primary_user")
     public String primaryUser;
 
+    @ColumnInfo(name = "audit_details")
+    public String auditDetails;
+
+    @ColumnInfo(name = "source_row_number")
+    public Integer sourceRowNumber;
+
     @NonNull
     @ColumnInfo(name = "audit_status")
     public AuditStatus auditStatus = AuditStatus.NOT_AUDITED;
@@ -74,6 +86,9 @@ public class AssetEntity {
 
     @ColumnInfo(name = "updated_at_utc")
     public long updatedAtUtc;
+
+    @ColumnInfo(name = "imported_at_utc")
+    public Long importedAtUtc;
 
     public AssetEntity(@NonNull String sessionId, @NonNull String assetTagId, String department,
                        String previousDepartment, String description, String status, String site,
@@ -86,14 +101,19 @@ public class AssetEntity {
         this.previousDepartment = previousDepartment;
         this.description = description;
         this.status = status;
+        this.brand = "";
+        this.model = "";
         this.site = site;
         this.location = location;
         this.category = category;
         this.subCategory = subCategory;
         this.owner = owner;
         this.primaryUser = primaryUser;
+        this.auditDetails = "";
+        this.sourceRowNumber = null;
         this.auditStatus = auditStatus;
         this.createdDuringAudit = createdDuringAudit;
         this.updatedAtUtc = updatedAtUtc;
+        this.importedAtUtc = null;
     }
 }

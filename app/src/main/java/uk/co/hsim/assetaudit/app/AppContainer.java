@@ -7,6 +7,7 @@ import uk.co.hsim.assetaudit.data.repository.RoomAuditSessionRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDepartmentAuditRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDiagnosticRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomSettingsRepository;
+import uk.co.hsim.assetaudit.importfile.ImportSessionService;
 import uk.co.hsim.assetaudit.service.AppStartupService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
@@ -16,6 +17,7 @@ import uk.co.hsim.assetaudit.util.clock.Clock;
 import uk.co.hsim.assetaudit.util.clock.SystemClock;
 import uk.co.hsim.assetaudit.util.device.AndroidDeviceInfoProvider;
 import uk.co.hsim.assetaudit.util.device.DeviceInfoProvider;
+import uk.co.hsim.assetaudit.util.identity.LocalUserIdentityProvider;
 import uk.co.hsim.assetaudit.util.logging.AndroidAppLogger;
 
 public final class AppContainer {
@@ -27,6 +29,7 @@ public final class AppContainer {
     public final DiagnosticService diagnosticService;
     public final AuditSessionService auditSessionService;
     public final DepartmentSummaryService departmentSummaryService;
+    public final ImportSessionService importSessionService;
     public final AppStartupService appStartupService;
     public final DeviceInfoProvider deviceInfoProvider;
 
@@ -45,6 +48,13 @@ public final class AppContainer {
         );
         auditSessionService = new AuditSessionService(new RoomAuditSessionRepository(database.auditSessionDao()));
         departmentSummaryService = new DepartmentSummaryService(new RoomDepartmentAuditRepository(database.departmentAuditDao()));
+        importSessionService = new ImportSessionService(
+                database,
+                settingsService,
+                clock,
+                new LocalUserIdentityProvider(),
+                deviceInfoProvider
+        );
         appStartupService = new AppStartupService(settingsService, diagnosticService, deviceInfoProvider);
     }
 

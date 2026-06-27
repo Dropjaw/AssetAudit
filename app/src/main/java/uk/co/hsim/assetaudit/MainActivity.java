@@ -1,7 +1,10 @@
 package uk.co.hsim.assetaudit;
 
+import android.database.Cursor;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -14,6 +17,8 @@ import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.text.DateFormat;
@@ -23,7 +28,17 @@ import java.util.List;
 import uk.co.hsim.assetaudit.app.AppContainer;
 import uk.co.hsim.assetaudit.data.db.AuditDatabase;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
+import uk.co.hsim.assetaudit.data.entity.DepartmentAuditEntity;
 import uk.co.hsim.assetaudit.data.entity.DiagnosticLogEntity;
+import uk.co.hsim.assetaudit.domain.results.OperationResult;
+import uk.co.hsim.assetaudit.importfile.AndroidDocumentSource;
+import uk.co.hsim.assetaudit.importfile.AssetFileFormat;
+import uk.co.hsim.assetaudit.importfile.AssetFileFormatDetector;
+import uk.co.hsim.assetaudit.importfile.CreatedAuditSession;
+import uk.co.hsim.assetaudit.importfile.DocumentReference;
+import uk.co.hsim.assetaudit.importfile.ImportConfirmation;
+import uk.co.hsim.assetaudit.importfile.ImportIssue;
+import uk.co.hsim.assetaudit.importfile.ImportPreview;
 import uk.co.hsim.assetaudit.service.SettingsKeys;
 import uk.co.hsim.assetaudit.ui.navigation.AppNavigator;
 import uk.co.hsim.assetaudit.ui.navigation.Screen;
@@ -37,12 +52,19 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout content;
     private AuditSessionEntity activeSession;
     private List<DiagnosticLogEntity> recentDiagnostics;
+    private ActivityResultLauncher<String[]> openAssetFileLauncher;
+    private ImportPreview currentImportPreview;
+    private CreatedAuditSession createdAuditSession;
+    private String importError;
+    private boolean importReading;
+    private boolean importCreating;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         appContainer = AppContainer.get(this);
+        openAssetFileLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::onAssetFileSelected);
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
@@ -120,18 +142,10 @@ public class MainActivity extends AppCompatActivity {
                 renderHome();
                 break;
             case IMPORT_FILE:
-                renderPlaceholder(
-                        "Asset file import",
-                        "Phase 2 will add the Android document picker, CSV/XLSX parsing, validation, and transactional session creation.",
-                        "Choose file is intentionally unavailable in Phase 1."
-                );
+                renderImportFile();
                 break;
             case DEPARTMENTS:
-                renderPlaceholder(
-                        "Department dashboard",
-                        "Department progress will appear here after an asset file has created an active local session.",
-                        "No imported session is available yet."
-                );
+                renderDepartments();
                 break;
             case AUDIT_SCAN:
                 renderPlaceholder(
@@ -176,6 +190,238 @@ public class MainActivity extends AppCompatActivity {
         content.addView(unavailable, matchWrap());
         addBody(disabledReason);
         addBackButton();
+    }
+
+    private void renderImportFile() {
+        if (createdAuditSession != null) {
+            renderImportCreated();
+            return;
+        }
+        if (activeSession != null && currentImportPreview == null && !importReading && !importCreating) {
+            addSectionHeading("Active session exists");
+            addBody("An audit session is already active. Phase 2 does not replace or archive active sessions.");
+            Button departments = button("Open Departments");
+            departments.setOnClickListener(v -> {
+                navigator.navigateTo(Screen.DEPARTMENTS);
+                renderCurrentScreen();
+            });
+            content.addView(departments, matchWrap());
+            addBackButton();
+            return;
+        }
+        if (importReading || importCreating) {
+            addSectionHeading(importCreating ? "Creating local audit session" : "Reading asset file");
+            addBody(importCreating ? "Writing assets, issues, lookups, and department summaries..." : "Parsing and validating the selected file...");
+            return;
+        }
+        if (importError != null) {
+            addSectionHeading("Import failed");
+            addBody(importError);
+            addChooseFileButton("Choose different file");
+            addBackButton();
+            return;
+        }
+        if (currentImportPreview == null) {
+            addSectionHeading("Asset file import");
+            addBody("Choose a CSV or XLSX asset file. The source file is opened read-only through Android document access.");
+            addBody("Required columns: Asset Tag ID, Department, Description, Status, Site, Location, Category.");
+            addChooseFileButton("Choose Asset File");
+            addBackButton();
+            return;
+        }
+        renderImportPreview();
+    }
+
+    private void renderDepartments() {
+        if (activeSession == null) {
+            renderPlaceholder(
+                    "Department dashboard",
+                    "Department progress will appear here after an asset file has created an active local session.",
+                    "No imported session is available yet."
+            );
+            return;
+        }
+        addSectionHeading("Department dashboard");
+        addBody("Imported department summaries are ready for the Phase 3 scan workflow.");
+        appContainer.executors.diskIO().execute(() -> {
+            List<DepartmentAuditEntity> departments = appContainer.departmentSummaryService
+                    .getDepartmentSummaries(activeSession.sessionId);
+            appContainer.executors.mainThread(() -> {
+                content.removeAllViews();
+                addSectionHeading("Department dashboard");
+                if (departments.isEmpty()) {
+                    addBody("No department summaries exist for the active session.");
+                } else {
+                    for (DepartmentAuditEntity department : departments) {
+                        addBody(department.departmentName + ": " + department.expectedCount
+                                + " expected, " + department.status);
+                    }
+                }
+                addBackButton();
+            });
+        });
+    }
+
+    private void renderImportPreview() {
+        addSectionHeading("Import preview");
+        addKeyValue("File", currentImportPreview.getDocumentReference().getDisplayName());
+        addKeyValue("Format", currentImportPreview.getDocumentReference().getDetectedFormat().name());
+        addKeyValue("Rows read", String.valueOf(currentImportPreview.getParsedFile().getMetadata().getSourceRowCount()));
+        addKeyValue("Accepted assets", String.valueOf(currentImportPreview.getValidationResult().getAcceptedRows().size()));
+        addKeyValue("Fatal issues", String.valueOf(currentImportPreview.getValidationResult().getFatalCount()));
+        addKeyValue("Warnings", String.valueOf(currentImportPreview.getValidationResult().getWarningCount()));
+        addKeyValue("Info", String.valueOf(currentImportPreview.getValidationResult().getInfoCount()));
+        addKeyValue("Leading-zero tags", String.valueOf(currentImportPreview.getLeadingZeroTagCount()));
+        addKeyValue("Alphanumeric tags", String.valueOf(currentImportPreview.getAlphanumericTagCount()));
+
+        addSectionHeading("Departments");
+        int shown = 0;
+        for (java.util.Map.Entry<String, Integer> entry : currentImportPreview.getDepartmentCounts().entrySet()) {
+            addBody(entry.getKey() + ": " + entry.getValue());
+            shown++;
+            if (shown >= 8) {
+                addBody("Additional departments: " + (currentImportPreview.getDepartmentCounts().size() - shown));
+                break;
+            }
+        }
+
+        addSectionHeading("Issues");
+        if (currentImportPreview.getValidationResult().getIssues().isEmpty()) {
+            addBody("No import issues found.");
+        } else {
+            for (ImportIssue issue : currentImportPreview.firstIssues(12)) {
+                String row = issue.getRowNumber() == null ? "File" : "Row " + issue.getRowNumber();
+                addBody(row + " - " + issue.getSeverity() + " - " + issue.getCode() + ": " + issue.getMessage());
+            }
+        }
+
+        CheckBox confirmWarnings = null;
+        if (currentImportPreview.getValidationResult().getWarningCount() > 0
+                && currentImportPreview.getValidationResult().getFatalCount() == 0) {
+            confirmWarnings = checkbox("I confirm the warnings and want to create the session");
+            content.addView(confirmWarnings);
+        }
+
+        Button create = button(currentImportPreview.getValidationResult().getWarningCount() > 0
+                ? "Create Session with Warnings"
+                : "Create Session");
+        create.setEnabled(currentImportPreview.getValidationResult().getFatalCount() == 0);
+        CheckBox finalConfirmWarnings = confirmWarnings;
+        create.setOnClickListener(v -> {
+            boolean warningsAccepted = currentImportPreview.getValidationResult().getWarningCount() == 0
+                    || (finalConfirmWarnings != null && finalConfirmWarnings.isChecked());
+            if (!warningsAccepted) {
+                Toast.makeText(this, "Confirm warnings before creating the session", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            createSessionFromPreview(warningsAccepted);
+        });
+        content.addView(create, matchWrap());
+        addChooseFileButton("Choose different file");
+        addBackButton();
+    }
+
+    private void renderImportCreated() {
+        addSectionHeading("Session created");
+        addKeyValue("Assets", String.valueOf(createdAuditSession.getAssetCount()));
+        addKeyValue("Departments", String.valueOf(createdAuditSession.getDepartmentCount()));
+        Button departments = button("Open Departments");
+        departments.setOnClickListener(v -> {
+            navigator.navigateTo(Screen.DEPARTMENTS);
+            renderCurrentScreen();
+        });
+        content.addView(departments, matchWrap());
+        addBackButton();
+    }
+
+    private void addChooseFileButton(String label) {
+        Button choose = button(label);
+        choose.setOnClickListener(v -> {
+            appContainer.executors.diskIO().execute(() -> appContainer.diagnosticService.logInfo("Import", "IMPORT_PICKER_OPENED"));
+            openAssetFileLauncher.launch(new String[]{
+                    "text/csv",
+                    "text/comma-separated-values",
+                    "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            });
+        });
+        content.addView(choose, matchWrap());
+    }
+
+    private void onAssetFileSelected(Uri uri) {
+        if (uri == null) {
+            return;
+        }
+        currentImportPreview = null;
+        createdAuditSession = null;
+        importError = null;
+        importReading = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            DocumentReference reference = documentReferenceFor(uri);
+            appContainer.diagnosticService.logInfo("Import", "IMPORT_FILE_SELECTED " + reference.getDisplayName()
+                    + " " + reference.getDetectedFormat());
+            OperationResult<ImportPreview> result = appContainer.importSessionService.previewImport(
+                    new AndroidDocumentSource(getContentResolver(), reference));
+            if (result.isSuccess()) {
+                currentImportPreview = result.getValue();
+                importError = null;
+                appContainer.diagnosticService.logInfo("Import", "IMPORT_VALIDATION_COMPLETED rows="
+                        + currentImportPreview.getValidationResult().getAcceptedRows().size()
+                        + " fatal=" + currentImportPreview.getValidationResult().getFatalCount()
+                        + " warning=" + currentImportPreview.getValidationResult().getWarningCount());
+            } else {
+                currentImportPreview = null;
+                importError = result.getMessage();
+                appContainer.diagnosticService.logWarning("Import", "IMPORT_PARSE_FAILED " + result.getMessage());
+            }
+            importReading = false;
+            appContainer.executors.mainThread(this::renderCurrentScreen);
+        });
+    }
+
+    private DocumentReference documentReferenceFor(Uri uri) {
+        String displayName = uri.getLastPathSegment();
+        long size = -1L;
+        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (nameIndex >= 0) {
+                    displayName = cursor.getString(nameIndex);
+                }
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                    size = cursor.getLong(sizeIndex);
+                }
+            }
+        }
+        String mimeType = getContentResolver().getType(uri);
+        AssetFileFormat format = AssetFileFormatDetector.detect(displayName, mimeType);
+        return new DocumentReference(uri, displayName, mimeType, size, format);
+    }
+
+    private void createSessionFromPreview(boolean warningsAccepted) {
+        importCreating = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            OperationResult<CreatedAuditSession> result = appContainer.importSessionService.createSessionFromPreview(
+                    currentImportPreview,
+                    new ImportConfirmation(warningsAccepted));
+            if (result.isSuccess()) {
+                createdAuditSession = result.getValue();
+                activeSession = appContainer.auditSessionService.getActiveSession();
+                currentImportPreview = null;
+                importError = null;
+                appContainer.diagnosticService.logInfo("Import", "IMPORT_SESSION_CREATED assets="
+                        + createdAuditSession.getAssetCount());
+            } else {
+                importError = result.getMessage();
+                appContainer.diagnosticService.logError("Import", "IMPORT_TRANSACTION_FAILED " + result.getMessage(), null);
+            }
+            importCreating = false;
+            recentDiagnostics = appContainer.diagnosticService.listRecent(8);
+            appContainer.executors.mainThread(this::renderCurrentScreen);
+        });
     }
 
     private void renderSettings() {

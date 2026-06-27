@@ -30,6 +30,15 @@ public class AuditSessionEntity {
     @ColumnInfo(name = "source_file_uri")
     public String sourceFileUri;
 
+    @ColumnInfo(name = "source_format")
+    public String sourceFormat;
+
+    @ColumnInfo(name = "source_row_count")
+    public Integer sourceRowCount;
+
+    @ColumnInfo(name = "imported_at_utc")
+    public Long importedAtUtc;
+
     @ColumnInfo(name = "started_at_utc")
     public long startedAtUtc;
 
@@ -57,6 +66,9 @@ public class AuditSessionEntity {
         this.auditName = auditName;
         this.sourceFileName = sourceFileName;
         this.sourceFileUri = sourceFileUri;
+        this.sourceFormat = null;
+        this.sourceRowCount = null;
+        this.importedAtUtc = null;
         this.startedAtUtc = startedAtUtc;
         this.completedAtUtc = completedAtUtc;
         this.status = status;
