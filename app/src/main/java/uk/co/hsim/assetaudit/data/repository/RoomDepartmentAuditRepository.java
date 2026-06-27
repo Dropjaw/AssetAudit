@@ -33,4 +33,9 @@ public final class RoomDepartmentAuditRepository implements DepartmentAuditRepos
     public void updateStatus(String sessionId, String departmentName, DepartmentAuditStatus status, Long completedAtUtc) {
         dao.updateStatus(sessionId, departmentName, status, completedAtUtc);
     }
+
+    @Override
+    public int updateProgress(String sessionId, String departmentName, int scannedCount, DepartmentAuditStatus status, Long completedAtUtc) {
+        return dao.updateProgress(sessionId, departmentName, scannedCount, status, completedAtUtc);
+    }
 }

@@ -38,4 +38,14 @@ public final class RoomAssetRepository implements AssetRepository {
     public int countByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus) {
         return dao.countByDepartmentAndStatus(sessionId, department, auditStatus);
     }
+
+    @Override
+    public List<AssetEntity> listByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus) {
+        return dao.listByDepartmentAndStatus(sessionId, department, auditStatus);
+    }
+
+    @Override
+    public int updateAuditStatus(String sessionId, String assetTagId, AuditStatus auditStatus, long updatedAtUtc) {
+        return dao.updateAuditStatus(sessionId, assetTagId, auditStatus, updatedAtUtc);
+    }
 }

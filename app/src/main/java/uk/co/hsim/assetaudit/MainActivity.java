@@ -27,8 +27,8 @@ import java.util.List;
 
 import uk.co.hsim.assetaudit.app.AppContainer;
 import uk.co.hsim.assetaudit.data.db.AuditDatabase;
+import uk.co.hsim.assetaudit.data.entity.AssetEntity;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
-import uk.co.hsim.assetaudit.data.entity.DepartmentAuditEntity;
 import uk.co.hsim.assetaudit.data.entity.DiagnosticLogEntity;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.importfile.AndroidDocumentSource;
@@ -39,6 +39,10 @@ import uk.co.hsim.assetaudit.importfile.DocumentReference;
 import uk.co.hsim.assetaudit.importfile.ImportConfirmation;
 import uk.co.hsim.assetaudit.importfile.ImportIssue;
 import uk.co.hsim.assetaudit.importfile.ImportPreview;
+import uk.co.hsim.assetaudit.service.DepartmentAuditContext;
+import uk.co.hsim.assetaudit.service.DepartmentDashboardRow;
+import uk.co.hsim.assetaudit.service.ScanProcessingResult;
+import uk.co.hsim.assetaudit.service.ScanRequest;
 import uk.co.hsim.assetaudit.service.SettingsKeys;
 import uk.co.hsim.assetaudit.ui.navigation.AppNavigator;
 import uk.co.hsim.assetaudit.ui.navigation.Screen;
@@ -58,6 +62,12 @@ public class MainActivity extends AppCompatActivity {
     private String importError;
     private boolean importReading;
     private boolean importCreating;
+    private String selectedDepartmentName;
+    private DepartmentAuditContext currentDepartmentContext;
+    private ScanProcessingResult lastScanResult;
+    private boolean departmentLoading;
+    private boolean scanProcessing;
+    private EditText manualBarcodeInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -133,7 +143,7 @@ public class MainActivity extends AppCompatActivity {
         Screen screen = navigator.getCurrent();
         titleView.setText(screen.getTitle());
         statusView.setText(activeSession == null
-                ? "No active audit session. Import is planned for Phase 2."
+                ? "No active audit session. Import a CSV file to begin."
                 : "Active session: " + activeSession.auditName);
         content.removeAllViews();
 
@@ -148,17 +158,13 @@ public class MainActivity extends AppCompatActivity {
                 renderDepartments();
                 break;
             case AUDIT_SCAN:
-                renderPlaceholder(
-                        "Scan workspace",
-                        "Live Zebra DataWedge capture, manual entry, and scan classification are reserved for later phases.",
-                        "No scan state is mutated in Phase 1."
-                );
+                renderAuditScan();
                 break;
             case REPORTS:
                 renderPlaceholder(
                         "Reports and export",
                         "Updated asset files, summaries, and exception reports will be generated after import and audit workflows exist.",
-                        "Export buttons are disabled in Phase 1."
+                        "Export buttons are disabled until a later phase."
                 );
                 break;
             case SETTINGS:
@@ -173,7 +179,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void renderHome() {
-        addBody("Asset Audit is ready for the foundation phase. The local database, settings, diagnostics, and navigation shell are active.");
+        addBody("Asset Audit is ready for local department auditing. Import a CSV file, open a department, and record expected manual scans.");
         addNavButton("Import Asset File", Screen.IMPORT_FILE, true);
         addNavButton("Departments", Screen.DEPARTMENTS, activeSession != null);
         addNavButton("Audit Scan", Screen.AUDIT_SCAN, activeSession != null);
@@ -242,24 +248,181 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         addSectionHeading("Department dashboard");
-        addBody("Imported department summaries are ready for the Phase 3 scan workflow.");
+        addBody("Open a department to audit its remaining expected assets with manual barcode entry.");
         appContainer.executors.diskIO().execute(() -> {
-            List<DepartmentAuditEntity> departments = appContainer.departmentSummaryService
-                    .getDepartmentSummaries(activeSession.sessionId);
+            List<DepartmentDashboardRow> departments = appContainer.departmentSummaryService
+                    .getDashboardRows(activeSession.sessionId);
             appContainer.executors.mainThread(() -> {
                 content.removeAllViews();
                 addSectionHeading("Department dashboard");
                 if (departments.isEmpty()) {
                     addBody("No department summaries exist for the active session.");
                 } else {
-                    for (DepartmentAuditEntity department : departments) {
-                        addBody(department.departmentName + ": " + department.expectedCount
-                                + " expected, " + department.status);
+                    for (DepartmentDashboardRow department : departments) {
+                        addKeyValue(department.getDepartmentName(),
+                                department.getScannedCount() + " scanned / "
+                                        + department.getExpectedCount() + " expected, "
+                                        + department.getRemainingCount() + " remaining, "
+                                        + department.getStatus());
+                        Button open = button("Open " + department.getDepartmentName());
+                        open.setOnClickListener(v -> openDepartmentAudit(department.getDepartmentName()));
+                        content.addView(open, matchWrap());
                     }
                 }
                 addBackButton();
             });
         });
+    }
+
+    private void openDepartmentAudit(String departmentName) {
+        selectedDepartmentName = departmentName;
+        currentDepartmentContext = null;
+        lastScanResult = null;
+        departmentLoading = false;
+        scanProcessing = false;
+        navigator.navigateTo(Screen.AUDIT_SCAN);
+        renderCurrentScreen();
+    }
+
+    private void renderAuditScan() {
+        if (activeSession == null) {
+            renderPlaceholder(
+                    "Audit scan",
+                    "Manual department scanning is available after an import creates an active local session.",
+                    "No imported session is available yet."
+            );
+            return;
+        }
+        if (selectedDepartmentName == null || selectedDepartmentName.trim().isEmpty()) {
+            addSectionHeading("Choose department");
+            addBody("Open a department before scanning so each asset is checked against the expected list.");
+            Button departments = button("Open Departments");
+            departments.setOnClickListener(v -> {
+                navigator.navigateTo(Screen.DEPARTMENTS);
+                renderCurrentScreen();
+            });
+            content.addView(departments, matchWrap());
+            addBackButton();
+            return;
+        }
+        if (currentDepartmentContext == null && !departmentLoading) {
+            loadDepartmentContext();
+        }
+        addSectionHeading(selectedDepartmentName);
+        if (departmentLoading) {
+            addBody("Loading remaining assets...");
+            addBackButton();
+            return;
+        }
+        if (currentDepartmentContext == null) {
+            addBody("Department details are not available yet.");
+            addBackButton();
+            return;
+        }
+
+        DepartmentDashboardRow progress = currentDepartmentContext.getProgress();
+        addKeyValue("Expected", String.valueOf(progress.getExpectedCount()));
+        addKeyValue("Scanned", String.valueOf(progress.getScannedCount()));
+        addKeyValue("Remaining", String.valueOf(progress.getRemainingCount()));
+        addKeyValue("Status", progress.getStatus().name());
+
+        addSectionHeading("Manual entry");
+        manualBarcodeInput = editText("Asset tag ID");
+        content.addView(manualBarcodeInput, matchWrap());
+
+        Button scan = button(scanProcessing ? "Processing..." : "Process Scan");
+        scan.setEnabled(!scanProcessing);
+        scan.setOnClickListener(v -> processManualScan(manualBarcodeInput.getText().toString()));
+        content.addView(scan, matchWrap());
+
+        Button clearResult = button("Clear Result");
+        clearResult.setEnabled(lastScanResult != null && !scanProcessing);
+        clearResult.setOnClickListener(v -> {
+            lastScanResult = null;
+            renderCurrentScreen();
+        });
+        content.addView(clearResult, matchWrap());
+
+        if (scanProcessing) {
+            addBody("Checking asset against this department...");
+        }
+        if (lastScanResult != null) {
+            renderScanResult(lastScanResult);
+        }
+
+        addSectionHeading("Remaining assets");
+        List<AssetEntity> remainingAssets = currentDepartmentContext.getRemainingAssets();
+        if (remainingAssets.isEmpty()) {
+            addBody("No remaining expected assets in this department.");
+        } else {
+            int limit = Math.min(remainingAssets.size(), 40);
+            for (int i = 0; i < limit; i++) {
+                AssetEntity asset = remainingAssets.get(i);
+                addBody(asset.assetTagId + " - " + asset.description);
+            }
+            if (remainingAssets.size() > limit) {
+                addBody("Additional remaining assets: " + (remainingAssets.size() - limit));
+            }
+        }
+        addBackButton();
+    }
+
+    private void loadDepartmentContext() {
+        departmentLoading = true;
+        appContainer.executors.diskIO().execute(() -> {
+            DepartmentAuditContext context = appContainer.departmentSummaryService.getDepartmentAuditContext(
+                    activeSession.sessionId,
+                    activeSession.auditName,
+                    selectedDepartmentName
+            );
+            appContainer.executors.mainThread(() -> {
+                currentDepartmentContext = context;
+                departmentLoading = false;
+                renderCurrentScreen();
+            });
+        });
+    }
+
+    private void processManualScan(String barcodeRaw) {
+        if (scanProcessing || activeSession == null || selectedDepartmentName == null) {
+            return;
+        }
+        scanProcessing = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            ScanProcessingResult result = appContainer.scanProcessor.processScan(new ScanRequest(
+                    activeSession.sessionId,
+                    selectedDepartmentName,
+                    barcodeRaw,
+                    "MANUAL"
+            ));
+            DepartmentAuditContext context = appContainer.departmentSummaryService.getDepartmentAuditContext(
+                    activeSession.sessionId,
+                    activeSession.auditName,
+                    selectedDepartmentName
+            );
+            appContainer.executors.mainThread(() -> {
+                lastScanResult = result;
+                currentDepartmentContext = context;
+                scanProcessing = false;
+                renderCurrentScreen();
+            });
+        });
+    }
+
+    private void renderScanResult(ScanProcessingResult result) {
+        addSectionHeading(result.isSuccess() ? "Scan accepted" : "Scan not accepted");
+        addKeyValue("Result", result.getResultType().name());
+        if (result.getAssetTagId() != null && !result.getAssetTagId().isEmpty()) {
+            addKeyValue("Asset tag", result.getAssetTagId());
+        }
+        if (result.getDescription() != null && !result.getDescription().isEmpty()) {
+            addKeyValue("Description", result.getDescription());
+        }
+        if (result.getAssetDepartment() != null && !result.getAssetDepartment().isEmpty()) {
+            addKeyValue("Asset department", result.getAssetDepartment());
+        }
+        addBody(result.getMessage());
     }
 
     private void renderImportPreview() {

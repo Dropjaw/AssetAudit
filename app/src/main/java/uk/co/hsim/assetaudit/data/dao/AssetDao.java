@@ -29,4 +29,7 @@ public interface AssetDao {
 
     @Query("SELECT * FROM asset WHERE session_id = :sessionId AND department = :department AND audit_status = :auditStatus ORDER BY asset_tag_id")
     List<AssetEntity> listByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus);
+
+    @Query("UPDATE asset SET audit_status = :auditStatus, updated_at_utc = :updatedAtUtc WHERE session_id = :sessionId AND asset_tag_id = :assetTagId")
+    int updateAuditStatus(String sessionId, String assetTagId, AuditStatus auditStatus, long updatedAtUtc);
 }

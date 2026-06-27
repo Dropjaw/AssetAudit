@@ -15,4 +15,8 @@ public interface AssetRepository {
     int countBySession(String sessionId);
 
     int countByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus);
+
+    List<AssetEntity> listByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus);
+
+    int updateAuditStatus(String sessionId, String assetTagId, AuditStatus auditStatus, long updatedAtUtc);
 }

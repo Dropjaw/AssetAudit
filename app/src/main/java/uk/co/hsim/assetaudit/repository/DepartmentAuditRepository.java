@@ -13,4 +13,6 @@ public interface DepartmentAuditRepository {
     DepartmentAuditEntity getDepartment(String sessionId, String departmentName);
 
     void updateStatus(String sessionId, String departmentName, DepartmentAuditStatus status, Long completedAtUtc);
+
+    int updateProgress(String sessionId, String departmentName, int scannedCount, DepartmentAuditStatus status, Long completedAtUtc);
 }

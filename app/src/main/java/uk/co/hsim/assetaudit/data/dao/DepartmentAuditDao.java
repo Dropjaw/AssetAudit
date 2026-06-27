@@ -28,6 +28,9 @@ public interface DepartmentAuditDao {
     @Query("UPDATE department_audit SET status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND department_name = :departmentName")
     void updateStatus(String sessionId, String departmentName, DepartmentAuditStatus status, Long completedAtUtc);
 
+    @Query("UPDATE department_audit SET scanned_count = :scannedCount, status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND department_name = :departmentName")
+    int updateProgress(String sessionId, String departmentName, int scannedCount, DepartmentAuditStatus status, Long completedAtUtc);
+
     @Update
     void update(DepartmentAuditEntity entity);
 }

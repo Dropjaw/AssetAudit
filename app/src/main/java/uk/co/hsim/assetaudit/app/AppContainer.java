@@ -3,6 +3,7 @@ package uk.co.hsim.assetaudit.app;
 import android.content.Context;
 
 import uk.co.hsim.assetaudit.data.db.AuditDatabase;
+import uk.co.hsim.assetaudit.data.repository.RoomAssetRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomAuditSessionRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDepartmentAuditRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDiagnosticRepository;
@@ -12,6 +13,7 @@ import uk.co.hsim.assetaudit.service.AppStartupService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
 import uk.co.hsim.assetaudit.service.DiagnosticService;
+import uk.co.hsim.assetaudit.service.ScanProcessor;
 import uk.co.hsim.assetaudit.service.SettingsService;
 import uk.co.hsim.assetaudit.util.clock.Clock;
 import uk.co.hsim.assetaudit.util.clock.SystemClock;
@@ -30,6 +32,7 @@ public final class AppContainer {
     public final AuditSessionService auditSessionService;
     public final DepartmentSummaryService departmentSummaryService;
     public final ImportSessionService importSessionService;
+    public final ScanProcessor scanProcessor;
     public final AppStartupService appStartupService;
     public final DeviceInfoProvider deviceInfoProvider;
 
@@ -47,10 +50,19 @@ public final class AppContainer {
                 new AndroidAppLogger()
         );
         auditSessionService = new AuditSessionService(new RoomAuditSessionRepository(database.auditSessionDao()));
-        departmentSummaryService = new DepartmentSummaryService(new RoomDepartmentAuditRepository(database.departmentAuditDao()));
+        departmentSummaryService = new DepartmentSummaryService(
+                new RoomDepartmentAuditRepository(database.departmentAuditDao()),
+                new RoomAssetRepository(database.assetDao())
+        );
         importSessionService = new ImportSessionService(
                 database,
                 settingsService,
+                clock,
+                new LocalUserIdentityProvider(),
+                deviceInfoProvider
+        );
+        scanProcessor = new ScanProcessor(
+                database,
                 clock,
                 new LocalUserIdentityProvider(),
                 deviceInfoProvider
