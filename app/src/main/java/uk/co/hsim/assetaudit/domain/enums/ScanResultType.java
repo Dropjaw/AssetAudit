@@ -1,0 +1,11 @@
+package uk.co.hsim.assetaudit.domain.enums;
+
+public enum ScanResultType {
+    SUCCESS_EXPECTED,
+    SUCCESS_MOVED_DEPARTMENT,
+    FOUND_IN_OTHER_DEPARTMENT_REQUIRES_CONFIRMATION,
+    UNKNOWN_ASSET_REQUIRES_INPUT,
+    DUPLICATE_SCAN,
+    INVALID_SCAN,
+    ERROR
+}

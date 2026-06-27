@@ -1,0 +1,14 @@
+package uk.co.hsim.assetaudit.domain.enums;
+
+public enum EventKind {
+    SESSION_CREATED,
+    ASSET_IMPORTED,
+    SCAN_ACCEPTED,
+    SCAN_REJECTED,
+    MOVEMENT_CONFIRMED,
+    NEW_ASSET_CREATED,
+    ASSET_MARKED_MISSING,
+    ASSET_SKIPPED,
+    SESSION_EXPORTED,
+    CORRECTION
+}

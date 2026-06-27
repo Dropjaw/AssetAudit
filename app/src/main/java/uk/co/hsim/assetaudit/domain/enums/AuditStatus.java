@@ -1,0 +1,12 @@
+package uk.co.hsim.assetaudit.domain.enums;
+
+public enum AuditStatus {
+    NOT_AUDITED,
+    AUDITED_EXPECTED,
+    AUDITED_MOVED_DEPARTMENT,
+    NEW_ASSET_ADDED,
+    DUPLICATE_SCAN,
+    MISSING_AFTER_DEPARTMENT_CLOSE,
+    SKIPPED_UNABLE_TO_VERIFY,
+    INVALID_SCAN
+}
