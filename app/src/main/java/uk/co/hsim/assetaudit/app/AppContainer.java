@@ -9,6 +9,9 @@ import uk.co.hsim.assetaudit.data.repository.RoomDepartmentAuditRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDiagnosticRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomSettingsRepository;
 import uk.co.hsim.assetaudit.importfile.ImportSessionService;
+import uk.co.hsim.assetaudit.scanner.DataWedgeProfileManager;
+import uk.co.hsim.assetaudit.scanner.ScannerEventRouter;
+import uk.co.hsim.assetaudit.scanner.ScannerPayloadParser;
 import uk.co.hsim.assetaudit.service.AppStartupService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
@@ -33,12 +36,16 @@ public final class AppContainer {
     public final DepartmentSummaryService departmentSummaryService;
     public final ImportSessionService importSessionService;
     public final ScanProcessor scanProcessor;
+    public final ScannerPayloadParser scannerPayloadParser;
+    public final ScannerEventRouter scannerEventRouter;
+    public final DataWedgeProfileManager dataWedgeProfileManager;
     public final AppStartupService appStartupService;
     public final DeviceInfoProvider deviceInfoProvider;
+    public final Clock clock;
 
     private AppContainer(Context context) {
         Context appContext = context.getApplicationContext();
-        Clock clock = new SystemClock();
+        clock = new SystemClock();
         executors = new AppExecutors();
         database = AuditDatabase.create(appContext);
         deviceInfoProvider = new AndroidDeviceInfoProvider(appContext);
@@ -67,6 +74,16 @@ public final class AppContainer {
                 new LocalUserIdentityProvider(),
                 deviceInfoProvider
         );
+        scannerPayloadParser = new ScannerPayloadParser();
+        scannerEventRouter = new ScannerEventRouter(
+                executors,
+                scanProcessor,
+                departmentSummaryService,
+                diagnosticService,
+                clock,
+                750L
+        );
+        dataWedgeProfileManager = new DataWedgeProfileManager(appContext);
         appStartupService = new AppStartupService(settingsService, diagnosticService, deviceInfoProvider);
     }
 

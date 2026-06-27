@@ -1,5 +1,7 @@
 package uk.co.hsim.assetaudit;
 
+import android.content.Context;
+import android.content.IntentFilter;
 import android.database.Cursor;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -39,6 +41,11 @@ import uk.co.hsim.assetaudit.importfile.DocumentReference;
 import uk.co.hsim.assetaudit.importfile.ImportConfirmation;
 import uk.co.hsim.assetaudit.importfile.ImportIssue;
 import uk.co.hsim.assetaudit.importfile.ImportPreview;
+import uk.co.hsim.assetaudit.scanner.DataWedgeConstants;
+import uk.co.hsim.assetaudit.scanner.DataWedgeProfileConfig;
+import uk.co.hsim.assetaudit.scanner.DataWedgeScanReceiver;
+import uk.co.hsim.assetaudit.scanner.ScannerPayload;
+import uk.co.hsim.assetaudit.scanner.ScannerRouteResult;
 import uk.co.hsim.assetaudit.service.DepartmentAuditContext;
 import uk.co.hsim.assetaudit.service.DepartmentDashboardRow;
 import uk.co.hsim.assetaudit.service.ScanProcessingResult;
@@ -68,12 +75,38 @@ public class MainActivity extends AppCompatActivity {
     private boolean departmentLoading;
     private boolean scanProcessing;
     private EditText manualBarcodeInput;
+    private DataWedgeScanReceiver dataWedgeScanReceiver;
+    private boolean scannerReceiverRegistered;
+    private boolean liveScannerEnabled = true;
+    private boolean scannerDiagnosticsEnabled = true;
+    private String dataWedgeProfileName = DataWedgeConstants.PROFILE_NAME;
+    private String dataWedgeIntentAction = DataWedgeConstants.ACTION_SCAN;
+    private String dataWedgeIntentCategory = DataWedgeConstants.CATEGORY_SCAN;
+    private String lastHardwareScanSummary = "No hardware scan received.";
+    private String lastProfileSetupResult = "Profile setup has not been requested.";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         appContainer = AppContainer.get(this);
+        dataWedgeScanReceiver = new DataWedgeScanReceiver(appContainer.scannerPayloadParser, appContainer.clock);
+        dataWedgeScanReceiver.setListener(new DataWedgeScanReceiver.Listener() {
+            @Override
+            public void onScannerPayload(ScannerPayload payload) {
+                handleScannerPayload(payload);
+            }
+
+            @Override
+            public void onScannerPayloadIgnored(String reason) {
+                lastHardwareScanSummary = "Ignored scanner payload: " + reason;
+                if (scannerDiagnosticsEnabled) {
+                    appContainer.executors.diskIO().execute(() ->
+                            appContainer.diagnosticService.logWarning("Scanner", "PAYLOAD_IGNORED " + reason));
+                }
+                renderCurrentScreen();
+            }
+        });
         openAssetFileLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::onAssetFileSelected);
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -92,9 +125,16 @@ public class MainActivity extends AppCompatActivity {
         appContainer.executors.diskIO().execute(() -> {
             appContainer.appStartupService.initialiseApplication();
             activeSession = appContainer.auditSessionService.getActiveSession();
+            loadScannerSettingsOnDisk();
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
             appContainer.executors.mainThread(this::renderCurrentScreen);
         });
+    }
+
+    @Override
+    protected void onPause() {
+        unregisterScannerReceiver();
+        super.onPause();
     }
 
     private void buildRoot() {
@@ -176,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
             default:
                 renderPlaceholder("Unknown screen", "The requested route is not available.", "Return Home.");
         }
+        updateScannerReceiverRegistration();
     }
 
     private void renderHome() {
@@ -326,6 +367,8 @@ public class MainActivity extends AppCompatActivity {
         addKeyValue("Remaining", String.valueOf(progress.getRemainingCount()));
         addKeyValue("Status", progress.getStatus().name());
 
+        renderScannerStatus();
+
         addSectionHeading("Manual entry");
         manualBarcodeInput = editText("Asset tag ID");
         content.addView(manualBarcodeInput, matchWrap());
@@ -408,6 +451,144 @@ public class MainActivity extends AppCompatActivity {
                 renderCurrentScreen();
             });
         });
+    }
+
+    private void handleScannerPayload(ScannerPayload payload) {
+        lastHardwareScanSummary = "Received " + safeScannerTag(payload.getData())
+                + " (" + payload.getSymbology() + ", " + payload.getSource() + ")";
+        appContainer.scannerEventRouter.route(payload, new uk.co.hsim.assetaudit.scanner.ScannerEventRouter.ContextProvider() {
+            @Override
+            public AuditSessionEntity getActiveSession() {
+                return activeSession;
+            }
+
+            @Override
+            public String getSelectedDepartment() {
+                return selectedDepartmentName;
+            }
+
+            @Override
+            public boolean isAuditScanVisible() {
+                return navigator.getCurrent() == Screen.AUDIT_SCAN;
+            }
+
+            @Override
+            public boolean isLiveScannerEnabled() {
+                return liveScannerEnabled;
+            }
+        }, this::handleScannerRouteResult);
+    }
+
+    private void handleScannerRouteResult(ScannerRouteResult result) {
+        if (result.isProcessed()) {
+            lastScanResult = result.getScanResult();
+            currentDepartmentContext = result.getDepartmentContext();
+            lastHardwareScanSummary = "Processed " + safeScannerTag(result.getPayload().getData())
+                    + ": " + result.getScanResult().getResultType();
+        } else {
+            lastHardwareScanSummary = result.getMessage();
+        }
+        renderCurrentScreen();
+    }
+
+    private void renderScannerStatus() {
+        addSectionHeading("Zebra scanner");
+        addKeyValue("Live scanner", liveScannerEnabled ? "Enabled" : "Disabled");
+        addKeyValue("Receiver", scannerReceiverRegistered ? "Listening" : scannerReadinessMessage());
+        addKeyValue("Profile", dataWedgeProfileName);
+        addKeyValue("Intent action", dataWedgeIntentAction);
+        addKeyValue("Last hardware scan", lastHardwareScanSummary);
+        addKeyValue("Profile setup", lastProfileSetupResult);
+
+        Button configure = button("Configure DataWedge Profile");
+        configure.setOnClickListener(v -> configureDataWedgeProfile());
+        content.addView(configure, matchWrap());
+
+        addBody("Manual TC21 fallback: create profile AssetAudit_TC21, associate package uk.co.hsim.assetaudit, enable Barcode input, disable Keystroke output, enable Intent output, set action uk.co.hsim.assetaudit.SCAN, category android.intent.category.DEFAULT, and delivery Broadcast Intent.");
+    }
+
+    private String scannerReadinessMessage() {
+        if (!liveScannerEnabled) {
+            return "Disabled in Settings";
+        }
+        if (activeSession == null) {
+            return "Waiting for active session";
+        }
+        if (selectedDepartmentName == null || selectedDepartmentName.trim().isEmpty()) {
+            return "Waiting for selected department";
+        }
+        if (navigator.getCurrent() != Screen.AUDIT_SCAN) {
+            return "Inactive outside Audit Scan";
+        }
+        return "Pending registration";
+    }
+
+    private void configureDataWedgeProfile() {
+        DataWedgeProfileConfig config = new DataWedgeProfileConfig(
+                dataWedgeProfileName,
+                getPackageName(),
+                dataWedgeIntentAction,
+                dataWedgeIntentCategory
+        );
+        lastProfileSetupResult = appContainer.dataWedgeProfileManager.configureProfile(config);
+        lastHardwareScanSummary = "Waiting for DataWedge scan intent.";
+        appContainer.executors.diskIO().execute(() -> {
+            appContainer.diagnosticService.logInfo("Scanner", "DATAWEDGE_PROFILE_REQUESTED "
+                    + dataWedgeProfileName + " " + dataWedgeIntentAction);
+            recentDiagnostics = appContainer.diagnosticService.listRecent(8);
+        });
+        renderCurrentScreen();
+    }
+
+    private void updateScannerReceiverRegistration() {
+        boolean shouldRegister = liveScannerEnabled
+                && navigator.getCurrent() == Screen.AUDIT_SCAN
+                && activeSession != null
+                && selectedDepartmentName != null
+                && !selectedDepartmentName.trim().isEmpty();
+        if (shouldRegister && !scannerReceiverRegistered) {
+            IntentFilter filter = new IntentFilter(dataWedgeIntentAction);
+            if (dataWedgeIntentCategory != null && !dataWedgeIntentCategory.trim().isEmpty()) {
+                filter.addCategory(dataWedgeIntentCategory);
+            }
+            registerReceiver(dataWedgeScanReceiver, filter, Context.RECEIVER_EXPORTED);
+            scannerReceiverRegistered = true;
+            if (scannerDiagnosticsEnabled) {
+                appContainer.executors.diskIO().execute(() ->
+                        appContainer.diagnosticService.logInfo("Scanner", "RECEIVER_REGISTERED " + dataWedgeIntentAction));
+            }
+            return;
+        }
+        if (!shouldRegister && scannerReceiverRegistered) {
+            unregisterScannerReceiver();
+        }
+    }
+
+    private void unregisterScannerReceiver() {
+        if (!scannerReceiverRegistered) {
+            return;
+        }
+        unregisterReceiver(dataWedgeScanReceiver);
+        scannerReceiverRegistered = false;
+        if (scannerDiagnosticsEnabled) {
+            appContainer.executors.diskIO().execute(() ->
+                    appContainer.diagnosticService.logInfo("Scanner", "RECEIVER_UNREGISTERED"));
+        }
+    }
+
+    private void loadScannerSettingsOnDisk() {
+        liveScannerEnabled = appContainer.settingsService.getBooleanSetting(SettingsKeys.LIVE_SCANNER_ENABLED, true);
+        scannerDiagnosticsEnabled = appContainer.settingsService.getBooleanSetting(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, true);
+        dataWedgeProfileName = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_PROFILE_NAME, DataWedgeConstants.PROFILE_NAME);
+        dataWedgeIntentAction = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_INTENT_ACTION, DataWedgeConstants.ACTION_SCAN);
+        dataWedgeIntentCategory = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_INTENT_CATEGORY, DataWedgeConstants.CATEGORY_SCAN);
+    }
+
+    private String safeScannerTag(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= 16 ? value : value.substring(0, 16) + "...";
     }
 
     private void renderScanResult(ScanProcessingResult result) {
@@ -593,30 +774,50 @@ public class MainActivity extends AppCompatActivity {
         CheckBox manual = checkbox("Allow manual barcode entry");
         CheckBox newAsset = checkbox("Allow new asset creation");
         CheckBox diagnostics = checkbox("Enable local diagnostic logging");
+        CheckBox liveScanner = checkbox("Enable Zebra DataWedge scanner");
+        CheckBox scannerDiagnostics = checkbox("Enable scanner diagnostics");
         EditText unassigned = editText("Unassigned department label");
         EditText exportFormat = editText("Default export format");
+        EditText profileName = editText("DataWedge profile name");
+        EditText intentAction = editText("DataWedge intent action");
+        EditText intentCategory = editText("DataWedge intent category");
 
         content.addView(movement);
         content.addView(manual);
         content.addView(newAsset);
         content.addView(diagnostics);
+        content.addView(liveScanner);
+        content.addView(scannerDiagnostics);
         content.addView(unassigned, matchWrap());
         content.addView(exportFormat, matchWrap());
+        content.addView(profileName, matchWrap());
+        content.addView(intentAction, matchWrap());
+        content.addView(intentCategory, matchWrap());
 
         appContainer.executors.diskIO().execute(() -> {
             boolean movementValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.REQUIRE_MOVEMENT_CONFIRMATION, true);
             boolean manualValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_MANUAL_BARCODE_ENTRY, true);
             boolean newAssetValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_NEW_ASSET_CREATION, true);
             boolean diagnosticsValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, true);
+            boolean liveScannerValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.LIVE_SCANNER_ENABLED, true);
+            boolean scannerDiagnosticsValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, true);
             String unassignedValue = appContainer.settingsService.getStringSetting(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, "Unassigned / Blank Department");
             String exportValue = appContainer.settingsService.getStringSetting(SettingsKeys.DEFAULT_EXPORT_FORMAT, "CSV");
+            String profileNameValue = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_PROFILE_NAME, DataWedgeConstants.PROFILE_NAME);
+            String intentActionValue = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_INTENT_ACTION, DataWedgeConstants.ACTION_SCAN);
+            String intentCategoryValue = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_INTENT_CATEGORY, DataWedgeConstants.CATEGORY_SCAN);
             appContainer.executors.mainThread(() -> {
                 movement.setChecked(movementValue);
                 manual.setChecked(manualValue);
                 newAsset.setChecked(newAssetValue);
                 diagnostics.setChecked(diagnosticsValue);
+                liveScanner.setChecked(liveScannerValue);
+                scannerDiagnostics.setChecked(scannerDiagnosticsValue);
                 unassigned.setText(unassignedValue);
                 exportFormat.setText(exportValue);
+                profileName.setText(profileNameValue);
+                intentAction.setText(intentActionValue);
+                intentCategory.setText(intentCategoryValue);
             });
         });
 
@@ -626,18 +827,33 @@ public class MainActivity extends AppCompatActivity {
             boolean manualValue = manual.isChecked();
             boolean newAssetValue = newAsset.isChecked();
             boolean diagnosticsValue = diagnostics.isChecked();
+            boolean liveScannerValue = liveScanner.isChecked();
+            boolean scannerDiagnosticsValue = scannerDiagnostics.isChecked();
             String unassignedValue = unassigned.getText().toString();
             String exportValue = exportFormat.getText().toString();
+            String profileNameValue = profileName.getText().toString();
+            String intentActionValue = intentAction.getText().toString();
+            String intentCategoryValue = intentCategory.getText().toString();
             appContainer.executors.diskIO().execute(() -> {
             appContainer.settingsService.setBooleanSetting(SettingsKeys.REQUIRE_MOVEMENT_CONFIRMATION, movementValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.ALLOW_MANUAL_BARCODE_ENTRY, manualValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.ALLOW_NEW_ASSET_CREATION, newAssetValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, diagnosticsValue);
+            appContainer.settingsService.setBooleanSetting(SettingsKeys.LIVE_SCANNER_ENABLED, liveScannerValue);
+            appContainer.settingsService.setBooleanSetting(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, scannerDiagnosticsValue);
             appContainer.settingsService.setStringSetting(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, unassignedValue);
             appContainer.settingsService.setStringSetting(SettingsKeys.DEFAULT_EXPORT_FORMAT, exportValue);
+            appContainer.settingsService.setStringSetting(SettingsKeys.DATAWEDGE_PROFILE_NAME, profileNameValue);
+            appContainer.settingsService.setStringSetting(SettingsKeys.DATAWEDGE_INTENT_ACTION, intentActionValue);
+            appContainer.settingsService.setStringSetting(SettingsKeys.DATAWEDGE_INTENT_CATEGORY, intentCategoryValue);
+            loadScannerSettingsOnDisk();
             appContainer.diagnosticService.logInfo("Settings", "Foundation settings saved");
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
-            appContainer.executors.mainThread(() -> Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show());
+            appContainer.executors.mainThread(() -> {
+                unregisterScannerReceiver();
+                updateScannerReceiverRegistration();
+                Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show();
+            });
             });
         });
         content.addView(save, matchWrap());

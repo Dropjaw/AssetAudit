@@ -6,6 +6,7 @@ import java.util.Map;
 
 import uk.co.hsim.assetaudit.data.entity.AppSettingEntity;
 import uk.co.hsim.assetaudit.repository.SettingsRepository;
+import uk.co.hsim.assetaudit.scanner.DataWedgeConstants;
 import uk.co.hsim.assetaudit.util.clock.Clock;
 
 public final class SettingsService {
@@ -65,6 +66,12 @@ public final class SettingsService {
         settings.put(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, "Unassigned / Blank Department");
         settings.put(SettingsKeys.DEFAULT_EXPORT_FORMAT, "CSV");
         settings.put(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, "true");
+        settings.put(SettingsKeys.LIVE_SCANNER_ENABLED, "true");
+        settings.put(SettingsKeys.DATAWEDGE_PROFILE_NAME, DataWedgeConstants.PROFILE_NAME);
+        settings.put(SettingsKeys.DATAWEDGE_INTENT_ACTION, DataWedgeConstants.ACTION_SCAN);
+        settings.put(SettingsKeys.DATAWEDGE_INTENT_CATEGORY, DataWedgeConstants.CATEGORY_SCAN);
+        settings.put(SettingsKeys.DATAWEDGE_DEBOUNCE_MS, "750");
+        settings.put(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, "true");
         return settings;
     }
 }
