@@ -24,6 +24,7 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.text.DateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -33,6 +34,7 @@ import uk.co.hsim.assetaudit.data.entity.AssetEntity;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
 import uk.co.hsim.assetaudit.data.entity.DiagnosticLogEntity;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
+import uk.co.hsim.assetaudit.domain.enums.ScanResultType;
 import uk.co.hsim.assetaudit.importfile.AndroidDocumentSource;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormat;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormatDetector;
@@ -48,9 +50,15 @@ import uk.co.hsim.assetaudit.scanner.ScannerPayload;
 import uk.co.hsim.assetaudit.scanner.ScannerRouteResult;
 import uk.co.hsim.assetaudit.service.DepartmentAuditContext;
 import uk.co.hsim.assetaudit.service.DepartmentDashboardRow;
+import uk.co.hsim.assetaudit.service.DuplicateReviewState;
+import uk.co.hsim.assetaudit.service.ExceptionResolutionResult;
+import uk.co.hsim.assetaudit.service.FinishDepartmentPreview;
+import uk.co.hsim.assetaudit.service.MovementConfirmationRequest;
+import uk.co.hsim.assetaudit.service.NewAssetDraft;
 import uk.co.hsim.assetaudit.service.ScanProcessingResult;
 import uk.co.hsim.assetaudit.service.ScanRequest;
 import uk.co.hsim.assetaudit.service.SettingsKeys;
+import uk.co.hsim.assetaudit.service.SkipAssetsRequest;
 import uk.co.hsim.assetaudit.ui.navigation.AppNavigator;
 import uk.co.hsim.assetaudit.ui.navigation.Screen;
 
@@ -84,6 +92,11 @@ public class MainActivity extends AppCompatActivity {
     private String dataWedgeIntentCategory = DataWedgeConstants.CATEGORY_SCAN;
     private String lastHardwareScanSummary = "No hardware scan received.";
     private String lastProfileSetupResult = "Profile setup has not been requested.";
+    private boolean exceptionActionInProgress;
+    private String exceptionError;
+    private boolean newAssetFormVisible;
+    private FinishDepartmentPreview finishDepartmentPreview;
+    private DuplicateReviewState duplicateReviewState;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -368,13 +381,18 @@ public class MainActivity extends AppCompatActivity {
         addKeyValue("Status", progress.getStatus().name());
 
         renderScannerStatus();
+        if (exceptionError != null) {
+            addSectionHeading("Exception action failed");
+            addBody(exceptionError);
+        }
+        renderExceptionPanels();
 
         addSectionHeading("Manual entry");
         manualBarcodeInput = editText("Asset tag ID");
         content.addView(manualBarcodeInput, matchWrap());
 
         Button scan = button(scanProcessing ? "Processing..." : "Process Scan");
-        scan.setEnabled(!scanProcessing);
+        scan.setEnabled(!scanProcessing && !exceptionActionInProgress);
         scan.setOnClickListener(v -> processManualScan(manualBarcodeInput.getText().toString()));
         content.addView(scan, matchWrap());
 
@@ -391,6 +409,14 @@ public class MainActivity extends AppCompatActivity {
         }
         if (lastScanResult != null) {
             renderScanResult(lastScanResult);
+        }
+
+        Button finish = button("Finish Department");
+        finish.setEnabled(!exceptionActionInProgress);
+        finish.setOnClickListener(v -> loadFinishDepartmentPreview());
+        content.addView(finish, matchWrap());
+        if (finishDepartmentPreview != null) {
+            renderFinishDepartmentPreview();
         }
 
         addSectionHeading("Remaining assets");
@@ -427,7 +453,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void processManualScan(String barcodeRaw) {
-        if (scanProcessing || activeSession == null || selectedDepartmentName == null) {
+        if (scanProcessing || exceptionActionInProgress || activeSession == null || selectedDepartmentName == null) {
             return;
         }
         scanProcessing = true;
@@ -448,12 +474,18 @@ public class MainActivity extends AppCompatActivity {
                 lastScanResult = result;
                 currentDepartmentContext = context;
                 scanProcessing = false;
+                refreshExceptionStateAfterScan(result);
                 renderCurrentScreen();
             });
         });
     }
 
     private void handleScannerPayload(ScannerPayload payload) {
+        if (exceptionActionInProgress) {
+            lastHardwareScanSummary = "Scanner ignored during exception action.";
+            renderCurrentScreen();
+            return;
+        }
         lastHardwareScanSummary = "Received " + safeScannerTag(payload.getData())
                 + " (" + payload.getSymbology() + ", " + payload.getSource() + ")";
         appContainer.scannerEventRouter.route(payload, new uk.co.hsim.assetaudit.scanner.ScannerEventRouter.ContextProvider() {
@@ -474,7 +506,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public boolean isLiveScannerEnabled() {
-                return liveScannerEnabled;
+                return liveScannerEnabled && !exceptionActionInProgress;
             }
         }, this::handleScannerRouteResult);
     }
@@ -485,6 +517,7 @@ public class MainActivity extends AppCompatActivity {
             currentDepartmentContext = result.getDepartmentContext();
             lastHardwareScanSummary = "Processed " + safeScannerTag(result.getPayload().getData())
                     + ": " + result.getScanResult().getResultType();
+            refreshExceptionStateAfterScan(result.getScanResult());
         } else {
             lastHardwareScanSummary = result.getMessage();
         }
@@ -542,6 +575,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateScannerReceiverRegistration() {
         boolean shouldRegister = liveScannerEnabled
+                && !exceptionActionInProgress
                 && navigator.getCurrent() == Screen.AUDIT_SCAN
                 && activeSession != null
                 && selectedDepartmentName != null
@@ -589,6 +623,289 @@ public class MainActivity extends AppCompatActivity {
             return "";
         }
         return value.length() <= 16 ? value : value.substring(0, 16) + "...";
+    }
+
+    private void refreshExceptionStateAfterScan(ScanProcessingResult result) {
+        exceptionError = null;
+        finishDepartmentPreview = null;
+        newAssetFormVisible = false;
+        duplicateReviewState = null;
+        if (result.getResultType() == ScanResultType.DUPLICATE_SCAN && activeSession != null) {
+            appContainer.executors.diskIO().execute(() -> {
+                OperationResult<DuplicateReviewState> review = appContainer.exceptionResolutionService
+                        .buildDuplicateReview(activeSession.sessionId, result.getAssetTagId());
+                if (review.isSuccess()) {
+                    duplicateReviewState = review.getValue();
+                    appContainer.executors.mainThread(this::renderCurrentScreen);
+                }
+            });
+        }
+    }
+
+    private void renderExceptionPanels() {
+        if (lastScanResult == null) {
+            return;
+        }
+        if (lastScanResult.getResultType() == ScanResultType.FOUND_IN_OTHER_DEPARTMENT_REQUIRES_CONFIRMATION) {
+            renderMovementPanel();
+        } else if (lastScanResult.getResultType() == ScanResultType.UNKNOWN_ASSET_REQUIRES_INPUT) {
+            renderNewAssetPanel();
+        } else if (lastScanResult.getResultType() == ScanResultType.DUPLICATE_SCAN) {
+            renderDuplicatePanel();
+        }
+    }
+
+    private void renderMovementPanel() {
+        addSectionHeading("Movement confirmation");
+        addKeyValue("Asset tag", lastScanResult.getAssetTagId());
+        addKeyValue("Current department", lastScanResult.getAssetDepartment());
+        addKeyValue("Selected department", selectedDepartmentName);
+        addBody("Confirm only if the asset is physically present in this department.");
+
+        Button confirm = button(exceptionActionInProgress ? "Confirming..." : "Confirm Movement");
+        confirm.setEnabled(!exceptionActionInProgress);
+        confirm.setOnClickListener(v -> confirmMovement());
+        content.addView(confirm, matchWrap());
+
+        Button cancel = button("Cancel Movement");
+        cancel.setEnabled(!exceptionActionInProgress);
+        cancel.setOnClickListener(v -> {
+            lastScanResult = null;
+            exceptionError = null;
+            renderCurrentScreen();
+        });
+        content.addView(cancel, matchWrap());
+    }
+
+    private void confirmMovement() {
+        if (activeSession == null || lastScanResult == null) {
+            return;
+        }
+        exceptionActionInProgress = true;
+        renderCurrentScreen();
+        MovementConfirmationRequest request = new MovementConfirmationRequest(
+                activeSession.sessionId,
+                lastScanResult.getAssetTagId(),
+                selectedDepartmentName,
+                lastScanResult.getAssetDepartment(),
+                "Confirmed from audit scan"
+        );
+        appContainer.executors.diskIO().execute(() -> {
+            OperationResult<ExceptionResolutionResult> result = appContainer.exceptionResolutionService.confirmMovement(request);
+            handleExceptionResult(result);
+        });
+    }
+
+    private void renderNewAssetPanel() {
+        addSectionHeading("Unknown asset");
+        addKeyValue("Asset tag", lastScanResult.getAssetTagId());
+        if (!newAssetFormVisible) {
+            Button add = button("Add New Asset");
+            add.setEnabled(!exceptionActionInProgress);
+            add.setOnClickListener(v -> {
+                newAssetFormVisible = true;
+                renderCurrentScreen();
+            });
+            content.addView(add, matchWrap());
+            return;
+        }
+
+        EditText tag = editText("Asset Tag ID");
+        tag.setText(lastScanResult.getAssetTagId());
+        EditText department = editText("Department");
+        department.setText(selectedDepartmentName);
+        EditText description = editText("Description");
+        EditText status = editText("Status");
+        status.setText("Found during audit");
+        EditText site = editText("Site");
+        EditText location = editText("Location");
+        EditText category = editText("Category");
+        EditText subCategory = editText("Sub Category");
+        EditText owner = editText("Owner");
+        EditText primaryUser = editText("Primary User");
+        EditText notes = editText("Notes");
+
+        content.addView(tag, matchWrap());
+        content.addView(department, matchWrap());
+        content.addView(description, matchWrap());
+        content.addView(status, matchWrap());
+        content.addView(site, matchWrap());
+        content.addView(location, matchWrap());
+        content.addView(category, matchWrap());
+        content.addView(subCategory, matchWrap());
+        content.addView(owner, matchWrap());
+        content.addView(primaryUser, matchWrap());
+        content.addView(notes, matchWrap());
+
+        Button create = button(exceptionActionInProgress ? "Adding..." : "Add Asset");
+        create.setEnabled(!exceptionActionInProgress);
+        create.setOnClickListener(v -> createNewAsset(new NewAssetDraft(
+                activeSession.sessionId,
+                tag.getText().toString(),
+                department.getText().toString(),
+                description.getText().toString(),
+                status.getText().toString(),
+                site.getText().toString(),
+                location.getText().toString(),
+                category.getText().toString(),
+                subCategory.getText().toString(),
+                owner.getText().toString(),
+                primaryUser.getText().toString(),
+                notes.getText().toString()
+        )));
+        content.addView(create, matchWrap());
+
+        Button cancel = button("Cancel New Asset");
+        cancel.setEnabled(!exceptionActionInProgress);
+        cancel.setOnClickListener(v -> {
+            newAssetFormVisible = false;
+            renderCurrentScreen();
+        });
+        content.addView(cancel, matchWrap());
+    }
+
+    private void createNewAsset(NewAssetDraft draft) {
+        exceptionActionInProgress = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            boolean allowed = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_NEW_ASSET_CREATION, true);
+            OperationResult<ExceptionResolutionResult> result = allowed
+                    ? appContainer.exceptionResolutionService.createNewAsset(draft)
+                    : OperationResult.fail(uk.co.hsim.assetaudit.domain.results.ErrorCode.FEATURE_NOT_AVAILABLE,
+                    "New asset creation is disabled in Settings.");
+            handleExceptionResult(result);
+        });
+    }
+
+    private void renderDuplicatePanel() {
+        addSectionHeading("Duplicate review");
+        if (duplicateReviewState == null) {
+            addBody("Loading duplicate context...");
+            return;
+        }
+        AssetEntity asset = duplicateReviewState.getAsset();
+        addKeyValue("Asset tag", asset.assetTagId);
+        addKeyValue("Department", asset.department == null ? "" : asset.department);
+        addKeyValue("Audit status", asset.auditStatus.name());
+        addKeyValue("Recent events", String.valueOf(duplicateReviewState.getRecentEvents().size()));
+        addBody("Duplicate scans are review evidence only. No counts or asset status are changed.");
+    }
+
+    private void loadFinishDepartmentPreview() {
+        if (activeSession == null || selectedDepartmentName == null) {
+            return;
+        }
+        exceptionActionInProgress = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            OperationResult<FinishDepartmentPreview> result = appContainer.exceptionResolutionService
+                    .previewFinishDepartment(activeSession.sessionId, selectedDepartmentName);
+            appContainer.executors.mainThread(() -> {
+                exceptionActionInProgress = false;
+                if (result.isSuccess()) {
+                    finishDepartmentPreview = result.getValue();
+                    exceptionError = null;
+                } else {
+                    exceptionError = result.getMessage();
+                }
+                renderCurrentScreen();
+            });
+        });
+    }
+
+    private void renderFinishDepartmentPreview() {
+        addSectionHeading("Finish department");
+        addKeyValue("Remaining", String.valueOf(finishDepartmentPreview.getRemainingCount()));
+        addKeyValue("Moved", String.valueOf(finishDepartmentPreview.getExceptionCounts().getMovedCount()));
+        addKeyValue("New", String.valueOf(finishDepartmentPreview.getExceptionCounts().getNewAssetCount()));
+        addKeyValue("Missing", String.valueOf(finishDepartmentPreview.getExceptionCounts().getMissingCount()));
+        addKeyValue("Skipped", String.valueOf(finishDepartmentPreview.getExceptionCounts().getSkippedCount()));
+        if (finishDepartmentPreview.getRemainingAssets().isEmpty()) {
+            addBody("No remaining assets. Department can be completed from current audit state.");
+            return;
+        }
+        int shown = Math.min(10, finishDepartmentPreview.getRemainingAssets().size());
+        for (int i = 0; i < shown; i++) {
+            AssetEntity asset = finishDepartmentPreview.getRemainingAssets().get(i);
+            addBody(asset.assetTagId + " - " + asset.description);
+        }
+        if (finishDepartmentPreview.getRemainingAssets().size() > shown) {
+            addBody("Additional remaining assets: " + (finishDepartmentPreview.getRemainingAssets().size() - shown));
+        }
+
+        Button missing = button("Mark All Remaining Missing");
+        missing.setEnabled(!exceptionActionInProgress);
+        missing.setOnClickListener(v -> markAllRemainingMissing());
+        content.addView(missing, matchWrap());
+
+        EditText skipReason = editText("Skip reason");
+        content.addView(skipReason, matchWrap());
+        Button skip = button("Skip All Remaining With Reason");
+        skip.setEnabled(!exceptionActionInProgress);
+        skip.setOnClickListener(v -> skipAllRemaining(skipReason.getText().toString()));
+        content.addView(skip, matchWrap());
+
+        Button close = button("Return to Scanning");
+        close.setOnClickListener(v -> {
+            finishDepartmentPreview = null;
+            renderCurrentScreen();
+        });
+        content.addView(close, matchWrap());
+    }
+
+    private void markAllRemainingMissing() {
+        List<String> tags = tagsFromFinishPreview();
+        exceptionActionInProgress = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() ->
+                handleExceptionResult(appContainer.exceptionResolutionService.markRemainingMissing(
+                        activeSession.sessionId, selectedDepartmentName, tags)));
+    }
+
+    private void skipAllRemaining(String reason) {
+        List<String> tags = tagsFromFinishPreview();
+        exceptionActionInProgress = true;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() ->
+                handleExceptionResult(appContainer.exceptionResolutionService.skipAssets(
+                        new SkipAssetsRequest(activeSession.sessionId, selectedDepartmentName, tags, reason))));
+    }
+
+    private List<String> tagsFromFinishPreview() {
+        List<String> tags = new ArrayList<>();
+        if (finishDepartmentPreview == null) {
+            return tags;
+        }
+        for (AssetEntity asset : finishDepartmentPreview.getRemainingAssets()) {
+            tags.add(asset.assetTagId);
+        }
+        return tags;
+    }
+
+    private void handleExceptionResult(OperationResult<ExceptionResolutionResult> result) {
+        DepartmentAuditContext refreshed = activeSession == null || selectedDepartmentName == null
+                ? null
+                : appContainer.departmentSummaryService.getDepartmentAuditContext(
+                activeSession.sessionId, activeSession.auditName, selectedDepartmentName);
+        recentDiagnostics = appContainer.diagnosticService.listRecent(8);
+        appContainer.executors.mainThread(() -> {
+            exceptionActionInProgress = false;
+            if (result.isSuccess()) {
+                currentDepartmentContext = result.getValue().getDepartmentContext() == null
+                        ? refreshed
+                        : result.getValue().getDepartmentContext();
+                lastScanResult = null;
+                exceptionError = null;
+                newAssetFormVisible = false;
+                duplicateReviewState = null;
+                finishDepartmentPreview = null;
+                Toast.makeText(this, result.getValue().getMessage(), Toast.LENGTH_SHORT).show();
+            } else {
+                currentDepartmentContext = refreshed;
+                exceptionError = result.getMessage();
+            }
+            renderCurrentScreen();
+        });
     }
 
     private void renderScanResult(ScanProcessingResult result) {

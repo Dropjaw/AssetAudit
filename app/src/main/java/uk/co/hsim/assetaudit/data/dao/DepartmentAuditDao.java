@@ -31,6 +31,10 @@ public interface DepartmentAuditDao {
     @Query("UPDATE department_audit SET scanned_count = :scannedCount, status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND department_name = :departmentName")
     int updateProgress(String sessionId, String departmentName, int scannedCount, DepartmentAuditStatus status, Long completedAtUtc);
 
+    @Query("UPDATE department_audit SET scanned_count = :scannedCount, missing_count = :missingCount, moved_in_count = :movedInCount, new_asset_count = :newAssetCount, status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND department_name = :departmentName")
+    int updateCounts(String sessionId, String departmentName, int scannedCount, int missingCount,
+                     int movedInCount, int newAssetCount, DepartmentAuditStatus status, Long completedAtUtc);
+
     @Update
     void update(DepartmentAuditEntity entity);
 }

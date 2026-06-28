@@ -16,6 +16,7 @@ import uk.co.hsim.assetaudit.service.AppStartupService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
 import uk.co.hsim.assetaudit.service.DiagnosticService;
+import uk.co.hsim.assetaudit.service.ExceptionResolutionService;
 import uk.co.hsim.assetaudit.service.ScanProcessor;
 import uk.co.hsim.assetaudit.service.SettingsService;
 import uk.co.hsim.assetaudit.util.clock.Clock;
@@ -36,6 +37,7 @@ public final class AppContainer {
     public final DepartmentSummaryService departmentSummaryService;
     public final ImportSessionService importSessionService;
     public final ScanProcessor scanProcessor;
+    public final ExceptionResolutionService exceptionResolutionService;
     public final ScannerPayloadParser scannerPayloadParser;
     public final ScannerEventRouter scannerEventRouter;
     public final DataWedgeProfileManager dataWedgeProfileManager;
@@ -70,6 +72,14 @@ public final class AppContainer {
         );
         scanProcessor = new ScanProcessor(
                 database,
+                clock,
+                new LocalUserIdentityProvider(),
+                deviceInfoProvider
+        );
+        exceptionResolutionService = new ExceptionResolutionService(
+                database,
+                departmentSummaryService,
+                diagnosticService,
                 clock,
                 new LocalUserIdentityProvider(),
                 deviceInfoProvider

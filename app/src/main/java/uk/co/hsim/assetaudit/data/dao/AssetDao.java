@@ -32,4 +32,13 @@ public interface AssetDao {
 
     @Query("UPDATE asset SET audit_status = :auditStatus, updated_at_utc = :updatedAtUtc WHERE session_id = :sessionId AND asset_tag_id = :assetTagId")
     int updateAuditStatus(String sessionId, String assetTagId, AuditStatus auditStatus, long updatedAtUtc);
+
+    @Query("UPDATE asset SET department = :newDepartment, previous_department = :previousDepartment, audit_status = :auditStatus, updated_at_utc = :updatedAtUtc WHERE session_id = :sessionId AND asset_tag_id = :assetTagId AND department = :expectedCurrentDepartment AND audit_status = :expectedStatus")
+    int confirmMovedDepartment(String sessionId, String assetTagId, String expectedCurrentDepartment,
+                               String newDepartment, String previousDepartment, AuditStatus expectedStatus,
+                               AuditStatus auditStatus, long updatedAtUtc);
+
+    @Query("UPDATE asset SET audit_status = :newStatus, updated_at_utc = :updatedAtUtc WHERE session_id = :sessionId AND asset_tag_id = :assetTagId AND department = :department AND audit_status = :expectedStatus")
+    int updateStatusIfCurrent(String sessionId, String assetTagId, String department,
+                              AuditStatus expectedStatus, AuditStatus newStatus, long updatedAtUtc);
 }
