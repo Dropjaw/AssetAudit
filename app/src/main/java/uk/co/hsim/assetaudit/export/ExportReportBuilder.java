@@ -37,11 +37,14 @@ public final class ExportReportBuilder {
     public List<String[]> auditSummary() {
         List<String[]> rows = new ArrayList<>();
         rows.add(new String[]{"session_id", "audit_name", "source_file_name", "readiness", "total_assets",
-                "remaining_assets", "exception_assets", "duplicate_scans", "invalid_scans", "exported_at_utc"});
+                "remaining_assets", "exception_assets", "duplicate_scans", "invalid_scans", "session_status",
+                "completed_at_utc", "completion_mode", "final_export_required", "force_closed", "exported_at_utc"});
         rows.add(new String[]{snapshot.session.sessionId, snapshot.session.auditName, snapshot.session.sourceFileName,
                 snapshot.preview.getReadiness().name(), String.valueOf(snapshot.preview.getTotalAssets()),
                 String.valueOf(snapshot.preview.getRemainingAssets()), String.valueOf(snapshot.preview.getExceptionAssets()),
                 String.valueOf(snapshot.preview.getDuplicateScans()), String.valueOf(snapshot.preview.getInvalidScans()),
+                snapshot.preview.getSessionStatus().name(), text(snapshot.preview.getCompletedAtUtc()),
+                completionMode(), "true", String.valueOf(snapshot.preview.isForceClosed()),
                 String.valueOf(snapshot.exportedAtUtc)});
         return rows;
     }
@@ -73,6 +76,10 @@ public final class ExportReportBuilder {
         addEventRows(rows, "DUPLICATE_SCAN", ScanResultType.DUPLICATE_SCAN, "INFO", false);
         addEventRows(rows, "INVALID_SCAN", ScanResultType.INVALID_SCAN, "INFO", false);
         addSummaryRows(rows, "UNRESOLVED", AuditStatus.NOT_AUDITED, "REVIEW", true);
+        if (snapshot.preview.isForceClosed()) {
+            rows.add(new String[]{"FORCE_CLOSED", "", String.valueOf(snapshot.preview.getRemainingAssets()),
+                    "WARNING", "true", "Audit was force closed before normal completion."});
+        }
         return rows;
     }
 
@@ -127,6 +134,16 @@ public final class ExportReportBuilder {
         return "Asset Audit export package\r\nAudit: " + snapshot.session.auditName
                 + "\r\nPackage: " + snapshot.packageId
                 + "\r\nThis package was generated from local Room audit state. The original import file was not modified.\r\n";
+    }
+
+    private String completionMode() {
+        if (snapshot.preview.isForceClosed()) {
+            return "FORCE_CLOSED";
+        }
+        if (snapshot.preview.getSessionStatus() == uk.co.hsim.assetaudit.domain.enums.SessionStatus.COMPLETED) {
+            return "NORMAL";
+        }
+        return "ACTIVE";
     }
 
     private void addSummaryRows(List<String[]> rows, String type, AuditStatus status, String severity, boolean followUp) {

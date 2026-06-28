@@ -19,6 +19,16 @@ public final class JsonManifestWriter {
         append(builder, "exportedAtUtc", String.valueOf(snapshot.exportedAtUtc), false, true);
         append(builder, "exportMode", options.getExportMode().name(), true, true);
         append(builder, "readiness", snapshot.preview.getReadiness().name(), true, true);
+        append(builder, "sessionStatus", snapshot.preview.getSessionStatus().name(), true, true);
+        append(builder, "completionMode", completionMode(snapshot), true, true);
+        append(builder, "completedAtUtc", snapshot.preview.getCompletedAtUtc() == null
+                ? "0" : String.valueOf(snapshot.preview.getCompletedAtUtc()), false, true);
+        append(builder, "normalCompletionSatisfied", String.valueOf(snapshot.preview.getSessionStatus()
+                == uk.co.hsim.assetaudit.domain.enums.SessionStatus.COMPLETED), false, true);
+        append(builder, "allDepartmentsComplete", String.valueOf(snapshot.preview.isAllDepartmentsComplete()), false, true);
+        append(builder, "finalExport", String.valueOf(snapshot.preview.isFinalExportRecorded()
+                || options.getExportMode() == ExportMode.FINAL), false, true);
+        append(builder, "forceClosed", String.valueOf(snapshot.preview.isForceClosed()), false, true);
         builder.append("  \"files\": [\n");
         for (int i = 0; i < files.size(); i++) {
             ExportFileRecord file = files.get(i);
@@ -34,6 +44,16 @@ public final class JsonManifestWriter {
         }
         builder.append("]\n}");
         return builder.toString();
+    }
+
+    private String completionMode(ExportSnapshot snapshot) {
+        if (snapshot.preview.isForceClosed()) {
+            return "FORCE_CLOSED";
+        }
+        if (snapshot.preview.getSessionStatus() == uk.co.hsim.assetaudit.domain.enums.SessionStatus.COMPLETED) {
+            return "NORMAL";
+        }
+        return "ACTIVE";
     }
 
     private void append(StringBuilder builder, String key, String value, boolean quote, boolean comma) {

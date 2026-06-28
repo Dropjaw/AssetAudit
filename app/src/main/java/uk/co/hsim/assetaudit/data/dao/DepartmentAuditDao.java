@@ -25,6 +25,15 @@ public interface DepartmentAuditDao {
     @Query("SELECT * FROM department_audit WHERE session_id = :sessionId AND department_name = :departmentName LIMIT 1")
     DepartmentAuditEntity getDepartment(String sessionId, String departmentName);
 
+    @Query("SELECT COUNT(*) FROM department_audit WHERE session_id = :sessionId")
+    int countDepartments(String sessionId);
+
+    @Query("SELECT COUNT(*) FROM department_audit WHERE session_id = :sessionId AND status IN ('COMPLETE', 'COMPLETE_WITH_EXCEPTIONS')")
+    int countCompleteDepartments(String sessionId);
+
+    @Query("SELECT COUNT(*) FROM department_audit WHERE session_id = :sessionId AND status NOT IN ('COMPLETE', 'COMPLETE_WITH_EXCEPTIONS')")
+    int countIncompleteDepartments(String sessionId);
+
     @Query("UPDATE department_audit SET status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND department_name = :departmentName")
     void updateStatus(String sessionId, String departmentName, DepartmentAuditStatus status, Long completedAtUtc);
 

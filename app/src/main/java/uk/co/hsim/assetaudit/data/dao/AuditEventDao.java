@@ -28,6 +28,9 @@ public interface AuditEventDao {
     @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId")
     int countBySession(String sessionId);
 
+    @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND event_kind = :eventKind")
+    int countBySessionAndKind(String sessionId, EventKind eventKind);
+
     @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND selected_department = :department AND result_type = :resultType")
     int countByDepartmentAndResult(String sessionId, String department, ScanResultType resultType);
 

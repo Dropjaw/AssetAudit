@@ -10,6 +10,7 @@ import uk.co.hsim.assetaudit.domain.enums.AuditStatus;
 import uk.co.hsim.assetaudit.domain.enums.DepartmentAuditStatus;
 import uk.co.hsim.assetaudit.domain.enums.ImportIssueSeverity;
 import uk.co.hsim.assetaudit.domain.enums.ScanResultType;
+import uk.co.hsim.assetaudit.domain.enums.SessionStatus;
 import uk.co.hsim.assetaudit.domain.results.ErrorCode;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.util.clock.Clock;
@@ -37,6 +38,11 @@ public final class ReportPreviewService {
                 + database.assetDao().countByStatus(sessionId, AuditStatus.SKIPPED_UNABLE_TO_VERIFY);
         int duplicates = database.auditEventDao().countByResult(sessionId, ScanResultType.DUPLICATE_SCAN);
         int invalid = database.auditEventDao().countByResult(sessionId, ScanResultType.INVALID_SCAN);
+        int incompleteDepartments = database.departmentAuditDao().countIncompleteDepartments(sessionId);
+        boolean allDepartmentsComplete = database.departmentAuditDao().countDepartments(sessionId) > 0
+                && incompleteDepartments == 0;
+        boolean finalExportRecorded = database.exportRunDao().countFinalExports(sessionId) > 0;
+        boolean forceClosed = session.status == SessionStatus.FORCE_CLOSED;
         List<String> warnings = new ArrayList<>();
         if (remaining > 0) {
             warnings.add(remaining + " assets remain not audited.");
@@ -52,6 +58,9 @@ public final class ReportPreviewService {
         if (importWarnings > 0) {
             warnings.add(importWarnings + " import warnings/info issues are included.");
         }
+        if (forceClosed) {
+            warnings.add("Audit was force closed by user.");
+        }
         ExportReadinessLevel readiness;
         if (total == 0) {
             readiness = ExportReadinessLevel.BLOCKED;
@@ -64,6 +73,8 @@ public final class ReportPreviewService {
             readiness = ExportReadinessLevel.READY;
         }
         return OperationResult.ok(new ExportPreview(session.sessionId, session.auditName, session.sourceFileName,
-                clock.nowUtcMillis(), readiness, total, remaining, exceptions, duplicates, invalid, departments, warnings));
+                clock.nowUtcMillis(), readiness, total, remaining, exceptions, duplicates, invalid,
+                session.status, session.completedAtUtc, allDepartmentsComplete, finalExportRecorded,
+                forceClosed, departments, warnings));
     }
 }

@@ -28,10 +28,21 @@ public final class ExportCompletionService {
     public OperationResult<String> recordSuccess(ExportSnapshot snapshot, ExportOptions options,
                                                  ExportPackageResult packageResult,
                                                  ExportDestinationSummary destination) {
+        OperationResult<ExportCompletionResult> result = recordSuccessWithResult(snapshot, options, packageResult, destination);
+        return result.isSuccess()
+                ? OperationResult.ok(result.getValue().getMessage())
+                : OperationResult.fail(result.getErrorCode(), result.getMessage());
+    }
+
+    public OperationResult<ExportCompletionResult> recordSuccessWithResult(ExportSnapshot snapshot, ExportOptions options,
+                                                                           ExportPackageResult packageResult,
+                                                                           ExportDestinationSummary destination) {
         String destinationName = destination == null ? "" : destination.getDisplayName();
         String destinationSummary = destination == null ? "" : destination.getDiagnosticSummary();
+        final String[] runIdRef = new String[1];
         database.runInTransaction(() -> {
             String runId = UUID.randomUUID().toString();
+            runIdRef[0] = runId;
             database.exportRunDao().insertRun(new ExportRunEntity(
                     runId,
                     snapshot.session.sessionId,
@@ -64,6 +75,6 @@ public final class ExportCompletionService {
                     "Export package " + packageResult.getPackageId() + " created: " + destinationSummary
             ));
         });
-        return OperationResult.ok("Export package created.");
+        return OperationResult.ok(new ExportCompletionResult(runIdRef[0], "Export package created."));
     }
 }

@@ -4,6 +4,7 @@ public enum SessionStatus {
     DRAFT,
     ACTIVE,
     COMPLETED,
+    FORCE_CLOSED,
     CANCELLED,
     ARCHIVED
 }

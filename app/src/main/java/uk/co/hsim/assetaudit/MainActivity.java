@@ -21,6 +21,7 @@ import androidx.activity.EdgeToEdge;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.text.DateFormat;
@@ -34,8 +35,10 @@ import uk.co.hsim.assetaudit.data.entity.AssetEntity;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
 import uk.co.hsim.assetaudit.data.entity.DiagnosticLogEntity;
 import uk.co.hsim.assetaudit.data.entity.ExportRunEntity;
+import uk.co.hsim.assetaudit.domain.enums.SessionStatus;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.domain.enums.ScanResultType;
+import uk.co.hsim.assetaudit.export.ExportCompletionResult;
 import uk.co.hsim.assetaudit.export.ExportMode;
 import uk.co.hsim.assetaudit.export.ExportDestinationSummary;
 import uk.co.hsim.assetaudit.export.ExportOptions;
@@ -60,8 +63,11 @@ import uk.co.hsim.assetaudit.scanner.ScannerRouteResult;
 import uk.co.hsim.assetaudit.service.DepartmentAuditContext;
 import uk.co.hsim.assetaudit.service.DepartmentDashboardRow;
 import uk.co.hsim.assetaudit.service.DuplicateReviewState;
+import uk.co.hsim.assetaudit.service.AuditCompletionResult;
+import uk.co.hsim.assetaudit.service.AuditCompletionState;
 import uk.co.hsim.assetaudit.service.ExceptionResolutionResult;
 import uk.co.hsim.assetaudit.service.FinishDepartmentPreview;
+import uk.co.hsim.assetaudit.service.ForceCloseAuditRequest;
 import uk.co.hsim.assetaudit.service.MovementConfirmationRequest;
 import uk.co.hsim.assetaudit.service.NewAssetDraft;
 import uk.co.hsim.assetaudit.service.ScanProcessingResult;
@@ -87,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
     private String importError;
     private boolean importReading;
     private boolean importCreating;
+    private AuditSessionEntity latestSession;
     private String selectedDepartmentName;
     private DepartmentAuditContext currentDepartmentContext;
     private ScanProcessingResult lastScanResult;
@@ -115,6 +122,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean exportPreparing;
     private boolean exportWriting;
     private String exportError;
+    private AuditCompletionState currentCompletionState;
+    private String lifecycleMessage;
+    private boolean forceCloseInProgress;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -159,6 +169,7 @@ public class MainActivity extends AppCompatActivity {
             appContainer.appStartupService.initialiseApplication();
             appContainer.diagnosticRetentionService.applyDefaultRetention();
             activeSession = appContainer.auditSessionService.getActiveSession();
+            latestSession = latestSessionOnDisk();
             if (activeSession != null) {
                 List<String> consistencyWarnings = appContainer.databaseConsistencyService.checkSession(activeSession.sessionId);
                 for (String warning : consistencyWarnings) {
@@ -166,6 +177,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
             loadScannerSettingsOnDisk();
+            loadCompletionStateOnDisk(reportSession());
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
             appContainer.executors.mainThread(this::renderCurrentScreen);
         });
@@ -222,9 +234,12 @@ public class MainActivity extends AppCompatActivity {
     private void renderCurrentScreen() {
         Screen screen = navigator.getCurrent();
         titleView.setText(screen.getTitle());
-        statusView.setText(activeSession == null
+        AuditSessionEntity reportSession = reportSession();
+        statusView.setText(reportSession == null
                 ? "No active audit session. Import a CSV file to begin."
-                : "Active session: " + activeSession.auditName);
+                : reportSession.status == SessionStatus.ACTIVE
+                ? "Active session: " + reportSession.auditName
+                : "Latest session: " + reportSession.auditName + " (" + reportSession.status.name() + ")");
         content.removeAllViews();
 
         switch (screen) {
@@ -257,12 +272,42 @@ public class MainActivity extends AppCompatActivity {
 
     private void renderHome() {
         addBody("Asset Audit is ready for local department auditing. Import a CSV file, open a department, and record expected manual scans.");
+        renderLifecycleSummary();
         addNavButton("Import Asset File", Screen.IMPORT_FILE, true);
         addNavButton("Departments", Screen.DEPARTMENTS, activeSession != null);
         addNavButton("Audit Scan", Screen.AUDIT_SCAN, activeSession != null);
-        addNavButton("Reports", Screen.REPORTS, activeSession != null);
+        addNavButton("Reports", Screen.REPORTS, reportSession() != null);
+        if (activeSession != null && !forceCloseInProgress) {
+            Button forceClose = button("Force Close Current Audit");
+            forceClose.setOnClickListener(v -> showForceCloseDialog());
+            content.addView(forceClose, matchWrap());
+            addBody("Stops the current audit without marking remaining assets as missing or skipped.");
+        } else if (forceCloseInProgress) {
+            addBody("Force closing current audit...");
+        }
         addNavButton("Settings", Screen.SETTINGS, true);
         addNavButton("About / Diagnostics", Screen.ABOUT, true);
+    }
+
+    private void renderLifecycleSummary() {
+        AuditSessionEntity session = reportSession();
+        if (session == null) {
+            return;
+        }
+        addSectionHeading("Audit lifecycle");
+        addKeyValue("Status", session.status.name());
+        if (currentCompletionState != null && currentCompletionState.getSessionId().equals(session.sessionId)) {
+            addKeyValue("Departments complete", currentCompletionState.getCompleteDepartments()
+                    + " / " + currentCompletionState.getTotalDepartments());
+            addKeyValue("Remaining assets", String.valueOf(currentCompletionState.getRemainingAssets()));
+            addKeyValue("Final export", currentCompletionState.hasFinalExport() ? "Recorded" : "Missing");
+            if (!currentCompletionState.getBlockers().isEmpty()) {
+                addBody("Completion blocker: " + currentCompletionState.getBlockers().get(0));
+            }
+        }
+        if (lifecycleMessage != null && !lifecycleMessage.isEmpty()) {
+            addBody(lifecycleMessage);
+        }
     }
 
     private void renderPlaceholder(String heading, String body, String disabledReason) {
@@ -273,6 +318,72 @@ public class MainActivity extends AppCompatActivity {
         content.addView(unavailable, matchWrap());
         addBody(disabledReason);
         addBackButton();
+    }
+
+    private AuditSessionEntity reportSession() {
+        return activeSession != null ? activeSession : latestSession;
+    }
+
+    private AuditSessionEntity latestSessionOnDisk() {
+        List<AuditSessionEntity> sessions = appContainer.database.auditSessionDao().listSessions();
+        return sessions.isEmpty() ? null : sessions.get(0);
+    }
+
+    private void loadCompletionStateOnDisk(AuditSessionEntity session) {
+        if (session == null) {
+            currentCompletionState = null;
+            return;
+        }
+        OperationResult<AuditCompletionState> state = appContainer.auditCompletionService
+                .getCompletionState(session.sessionId);
+        currentCompletionState = state.isSuccess() ? state.getValue() : null;
+    }
+
+    private void showForceCloseDialog() {
+        if (activeSession == null) {
+            return;
+        }
+        EditText reason = editText("Reason is required");
+        reason.setSingleLine(false);
+        reason.setMinLines(3);
+        new AlertDialog.Builder(this)
+                .setTitle("Force Close Current Audit?")
+                .setMessage("This will close the current audit without completing all departments. "
+                        + "It will not change remaining asset statuses or mark assets as missing or skipped. "
+                        + "It will prevent further scanning against this audit and will be recorded in the event log.")
+                .setView(reason)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Force Close Audit", (dialog, which) ->
+                        forceCloseCurrentAudit(reason.getText().toString()))
+                .show();
+    }
+
+    private void forceCloseCurrentAudit(String reason) {
+        if (activeSession == null) {
+            return;
+        }
+        if (reason == null || reason.trim().isEmpty()) {
+            Toast.makeText(this, "Force close reason is required", Toast.LENGTH_LONG).show();
+            return;
+        }
+        forceCloseInProgress = true;
+        lifecycleMessage = null;
+        renderCurrentScreen();
+        String sessionId = activeSession.sessionId;
+        appContainer.executors.diskIO().execute(() -> {
+            OperationResult<AuditCompletionResult> result = appContainer.auditCompletionService
+                    .forceCloseCurrentAudit(new ForceCloseAuditRequest(sessionId, reason, true));
+            activeSession = appContainer.auditSessionService.getActiveSession();
+            latestSession = latestSessionOnDisk();
+            loadCompletionStateOnDisk(reportSession());
+            recentDiagnostics = appContainer.diagnosticService.listRecent(8);
+            appContainer.executors.mainThread(() -> {
+                forceCloseInProgress = false;
+                lifecycleMessage = result.isSuccess() ? result.getValue().getMessage() : result.getMessage();
+                Toast.makeText(this, lifecycleMessage, Toast.LENGTH_LONG).show();
+                renderCurrentScreen();
+            });
+        });
     }
 
     private void renderImportFile() {
@@ -1094,6 +1205,8 @@ public class MainActivity extends AppCompatActivity {
             if (result.isSuccess()) {
                 createdAuditSession = result.getValue();
                 activeSession = appContainer.auditSessionService.getActiveSession();
+                latestSession = latestSessionOnDisk();
+                loadCompletionStateOnDisk(reportSession());
                 currentImportPreview = null;
                 importError = null;
                 appContainer.diagnosticService.logInfo("Import", "IMPORT_SESSION_CREATED assets="
@@ -1109,7 +1222,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void renderReports() {
-        if (activeSession == null) {
+        AuditSessionEntity session = reportSession();
+        if (session == null) {
             renderPlaceholder(
                     "Reports and export",
                     "Export packages are available after an import creates an active local session.",
@@ -1129,12 +1243,19 @@ public class MainActivity extends AppCompatActivity {
         }
         if (currentExportPreview != null) {
             addKeyValue("Session", currentExportPreview.getAuditName());
+            addKeyValue("Session status", currentExportPreview.getSessionStatus().name());
             addKeyValue("Readiness", currentExportPreview.getReadiness().name());
             addKeyValue("Total assets", String.valueOf(currentExportPreview.getTotalAssets()));
             addKeyValue("Remaining", String.valueOf(currentExportPreview.getRemainingAssets()));
             addKeyValue("Exception assets", String.valueOf(currentExportPreview.getExceptionAssets()));
             addKeyValue("Duplicate scans", String.valueOf(currentExportPreview.getDuplicateScans()));
             addKeyValue("Invalid scans", String.valueOf(currentExportPreview.getInvalidScans()));
+            addKeyValue("Departments complete", currentExportPreview.isAllDepartmentsComplete() ? "Yes" : "No");
+            addKeyValue("Final export recorded", currentExportPreview.isFinalExportRecorded() ? "Yes" : "No");
+            if (currentExportPreview.getCompletedAtUtc() != null) {
+                addKeyValue("Completed", DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM)
+                        .format(new Date(currentExportPreview.getCompletedAtUtc())));
+            }
 
             if (!currentExportPreview.getWarnings().isEmpty()) {
                 addSectionHeading("Warnings");
@@ -1197,19 +1318,23 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadExportPreview() {
-        if (activeSession == null) {
+        AuditSessionEntity session = reportSession();
+        if (session == null) {
             return;
         }
         exportPreviewLoading = true;
         appContainer.executors.diskIO().execute(() -> {
             boolean allowDraft = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, false);
             OperationResult<ExportPreview> result = appContainer.reportPreviewService
-                    .buildPreview(activeSession.sessionId, allowDraft);
+                    .buildPreview(session.sessionId, allowDraft);
             List<ExportRunEntity> runs = appContainer.database.exportRunDao()
-                    .listRecentRuns(activeSession.sessionId, 5);
+                    .listRecentRuns(session.sessionId, 5);
+            OperationResult<AuditCompletionState> completion = appContainer.auditCompletionService
+                    .getCompletionState(session.sessionId);
             appContainer.executors.mainThread(() -> {
                 exportPreviewLoading = false;
                 recentExportRuns = runs;
+                currentCompletionState = completion.isSuccess() ? completion.getValue() : currentCompletionState;
                 if (result.isSuccess()) {
                     currentExportPreview = result.getValue();
                     exportError = null;
@@ -1243,7 +1368,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void prepareExportPackage() {
-        if (activeSession == null || exportPreparing || exportWriting) {
+        AuditSessionEntity session = reportSession();
+        if (session == null || exportPreparing || exportWriting) {
             return;
         }
         exportPreparing = true;
@@ -1252,7 +1378,7 @@ public class MainActivity extends AppCompatActivity {
         appContainer.executors.diskIO().execute(() -> {
             boolean allowDraft = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, false);
             OperationResult<ExportSnapshot> result = appContainer.exportSnapshotBuilder
-                    .build(activeSession.sessionId, allowDraft);
+                    .build(session.sessionId, allowDraft);
             appContainer.executors.mainThread(() -> {
                 exportPreparing = false;
                 if (result.isSuccess()) {
@@ -1287,12 +1413,27 @@ public class MainActivity extends AppCompatActivity {
             ExportDestinationSummary destination = exportDestinationSummaryFor(uri);
             OperationResult<ExportPackageResult> packageResult = appContainer.exportPackageService
                     .writePackage(getContentResolver(), uri, snapshot, options);
-            OperationResult<String> completion = packageResult.isSuccess()
-                    ? appContainer.exportCompletionService.recordSuccess(snapshot, options, packageResult.getValue(), destination)
+            OperationResult<ExportCompletionResult> exportCompletion = packageResult.isSuccess()
+                    ? appContainer.exportCompletionService.recordSuccessWithResult(snapshot, options, packageResult.getValue(), destination)
                     : OperationResult.fail(packageResult.getErrorCode(), packageResult.getMessage());
+            OperationResult<AuditCompletionResult> auditCompletion = exportCompletion.isSuccess()
+                    && options.getExportMode() == ExportMode.FINAL
+                    ? appContainer.auditCompletionService.tryCompleteAfterFinalExport(
+                    snapshot.session.sessionId,
+                    exportCompletion.getValue().getExportRunId(),
+                    packageResult.getValue().getPackageId())
+                    : null;
+            activeSession = appContainer.auditSessionService.getActiveSession();
+            latestSession = latestSessionOnDisk();
+            loadCompletionStateOnDisk(reportSession());
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
             List<ExportRunEntity> runs = appContainer.database.exportRunDao()
                     .listRecentRuns(snapshot.session.sessionId, 5);
+            OperationResult<String> completion = exportCompletion.isSuccess()
+                    ? OperationResult.ok(auditCompletion != null && auditCompletion.isSuccess()
+                    ? exportCompletion.getValue().getMessage() + " " + auditCompletion.getValue().getMessage()
+                    : exportCompletion.getValue().getMessage())
+                    : OperationResult.fail(packageResult.getErrorCode(), packageResult.getMessage());
             appContainer.executors.mainThread(() -> {
                 exportWriting = false;
                 pendingExportSnapshot = null;
@@ -1300,6 +1441,7 @@ public class MainActivity extends AppCompatActivity {
                 if (packageResult.isSuccess() && completion.isSuccess()) {
                     lastExportPackageResult = packageResult.getValue();
                     currentExportPreview = null;
+                    lifecycleMessage = completion.getValue();
                     Toast.makeText(this, completion.getValue(), Toast.LENGTH_SHORT).show();
                 } else {
                     exportError = packageResult.isSuccess() ? completion.getMessage() : packageResult.getMessage();

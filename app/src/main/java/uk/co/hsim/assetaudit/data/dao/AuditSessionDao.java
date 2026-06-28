@@ -26,4 +26,7 @@ public interface AuditSessionDao {
 
     @Query("UPDATE audit_session SET status = :status, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId")
     void updateStatus(String sessionId, SessionStatus status, Long completedAtUtc);
+
+    @Query("UPDATE audit_session SET status = :newStatus, completed_at_utc = :completedAtUtc WHERE session_id = :sessionId AND status = :expectedStatus")
+    int updateStatusIfCurrent(String sessionId, SessionStatus expectedStatus, SessionStatus newStatus, Long completedAtUtc);
 }

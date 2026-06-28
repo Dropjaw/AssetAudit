@@ -23,4 +23,7 @@ public interface ExportRunDao {
 
     @Query("SELECT COUNT(*) FROM export_file WHERE export_run_id = :exportRunId")
     int countFiles(String exportRunId);
+
+    @Query("SELECT COUNT(*) FROM export_run WHERE session_id = :sessionId AND export_mode = 'FINAL'")
+    int countFinalExports(String sessionId);
 }

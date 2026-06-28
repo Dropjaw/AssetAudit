@@ -19,6 +19,7 @@ import uk.co.hsim.assetaudit.scanner.DataWedgeProfileManager;
 import uk.co.hsim.assetaudit.scanner.ScannerEventRouter;
 import uk.co.hsim.assetaudit.scanner.ScannerPayloadParser;
 import uk.co.hsim.assetaudit.service.AppStartupService;
+import uk.co.hsim.assetaudit.service.AuditCompletionService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
 import uk.co.hsim.assetaudit.service.DatabaseConsistencyService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
@@ -45,6 +46,7 @@ public final class AppContainer {
     public final DiagnosticService diagnosticService;
     public final DiagnosticRetentionService diagnosticRetentionService;
     public final AuditSessionService auditSessionService;
+    public final AuditCompletionService auditCompletionService;
     public final DatabaseConsistencyService databaseConsistencyService;
     public final DepartmentSummaryService departmentSummaryService;
     public final ImportSessionService importSessionService;
@@ -77,6 +79,13 @@ public final class AppContainer {
         );
         diagnosticRetentionService = new DiagnosticRetentionService(database.diagnosticLogDao(), clock);
         auditSessionService = new AuditSessionService(new RoomAuditSessionRepository(database.auditSessionDao()));
+        auditCompletionService = new AuditCompletionService(
+                database,
+                diagnosticService,
+                clock,
+                new LocalUserIdentityProvider(),
+                deviceInfoProvider
+        );
         databaseConsistencyService = new DatabaseConsistencyService(database);
         departmentSummaryService = new DepartmentSummaryService(
                 new RoomDepartmentAuditRepository(database.departmentAuditDao()),
