@@ -26,14 +26,17 @@ public final class ExportCompletionService {
     }
 
     public OperationResult<String> recordSuccess(ExportSnapshot snapshot, ExportOptions options,
-                                                 ExportPackageResult packageResult, String destinationName) {
+                                                 ExportPackageResult packageResult,
+                                                 ExportDestinationSummary destination) {
+        String destinationName = destination == null ? "" : destination.getDisplayName();
+        String destinationSummary = destination == null ? "" : destination.getDiagnosticSummary();
         database.runInTransaction(() -> {
             String runId = UUID.randomUUID().toString();
             database.exportRunDao().insertRun(new ExportRunEntity(
                     runId,
                     snapshot.session.sessionId,
                     packageResult.getPackageId(),
-                    destinationName,
+                    destinationSummary,
                     options.getExportMode().name(),
                     snapshot.preview.getReadiness().name(),
                     snapshot.exportedAtUtc,
@@ -58,7 +61,7 @@ public final class ExportCompletionService {
                     snapshot.exportedAtUtc,
                     userIdentityProvider.getDisplayName(),
                     deviceInfoProvider.getModel(),
-                    "Export package created: " + destinationName
+                    "Export package " + packageResult.getPackageId() + " created: " + destinationSummary
             ));
         });
         return OperationResult.ok("Export package created.");

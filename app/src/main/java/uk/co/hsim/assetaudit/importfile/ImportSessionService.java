@@ -21,6 +21,7 @@ import uk.co.hsim.assetaudit.domain.enums.ImportIssueSeverity;
 import uk.co.hsim.assetaudit.domain.enums.SessionStatus;
 import uk.co.hsim.assetaudit.domain.results.ErrorCode;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
+import uk.co.hsim.assetaudit.hardening.DiagnosticRedactor;
 import uk.co.hsim.assetaudit.service.SettingsKeys;
 import uk.co.hsim.assetaudit.service.SettingsService;
 import uk.co.hsim.assetaudit.util.clock.Clock;
@@ -28,11 +29,15 @@ import uk.co.hsim.assetaudit.util.device.DeviceInfoProvider;
 import uk.co.hsim.assetaudit.util.identity.UserIdentityProvider;
 
 public final class ImportSessionService {
+    private static final long MAX_IMPORT_SIZE_BYTES = 20L * 1024L * 1024L;
+    private static final int MAX_IMPORT_ROWS = 20000;
+
     private final AuditDatabase database;
     private final SettingsService settingsService;
     private final Clock clock;
     private final UserIdentityProvider userIdentityProvider;
     private final DeviceInfoProvider deviceInfoProvider;
+    private final DiagnosticRedactor diagnosticRedactor;
     private final List<AssetFileReader> readers;
 
     public ImportSessionService(AuditDatabase database, SettingsService settingsService, Clock clock,
@@ -43,6 +48,7 @@ public final class ImportSessionService {
         this.clock = clock;
         this.userIdentityProvider = userIdentityProvider;
         this.deviceInfoProvider = deviceInfoProvider;
+        this.diagnosticRedactor = new DiagnosticRedactor();
         this.readers = new ArrayList<>();
         readers.add(new CsvAssetFileReader());
         readers.add(new XlsxAssetFileReader());
@@ -53,12 +59,18 @@ public final class ImportSessionService {
         if (reference.getDetectedFormat() == AssetFileFormat.UNSUPPORTED) {
             return OperationResult.fail(ErrorCode.VALIDATION_FAILED, "Unsupported file type.");
         }
+        if (reference.getSizeBytes() > MAX_IMPORT_SIZE_BYTES) {
+            return OperationResult.fail(ErrorCode.VALIDATION_FAILED, "Asset file is too large for pilot import.");
+        }
         AssetFileReader reader = readerFor(reference.getDetectedFormat());
         if (reader == null) {
             return OperationResult.fail(ErrorCode.VALIDATION_FAILED, "Unsupported file type.");
         }
         try {
             ParsedAssetFile parsedFile = reader.read(source);
+            if (parsedFile.getMetadata().getSourceRowCount() > MAX_IMPORT_ROWS) {
+                return OperationResult.fail(ErrorCode.VALIDATION_FAILED, "Asset file has too many rows for pilot import.");
+            }
             AssetImportMapper mapper = new AssetImportMapper();
             HeaderDetectionResult headerDetection = mapper.detectHeaders(parsedFile);
             List<AssetImportRow> rows = mapper.mapRows(parsedFile);
@@ -101,8 +113,10 @@ public final class ImportSessionService {
         AuditSessionEntity session = new AuditSessionEntity(
                 sessionId,
                 auditName,
-                preview.getDocumentReference().getDisplayName(),
-                preview.getDocumentReference().getUri() == null ? null : preview.getDocumentReference().getUri().toString(),
+                diagnosticRedactor.safeDisplayName(preview.getDocumentReference().getDisplayName()),
+                preview.getDocumentReference().getUri() == null
+                        ? null
+                        : diagnosticRedactor.redactUri(preview.getDocumentReference().getUri().toString()),
                 now,
                 null,
                 SessionStatus.ACTIVE,

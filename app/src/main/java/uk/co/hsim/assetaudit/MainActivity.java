@@ -37,12 +37,14 @@ import uk.co.hsim.assetaudit.data.entity.ExportRunEntity;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.domain.enums.ScanResultType;
 import uk.co.hsim.assetaudit.export.ExportMode;
+import uk.co.hsim.assetaudit.export.ExportDestinationSummary;
 import uk.co.hsim.assetaudit.export.ExportOptions;
 import uk.co.hsim.assetaudit.export.ExportPackageResult;
 import uk.co.hsim.assetaudit.export.ExportPreview;
 import uk.co.hsim.assetaudit.export.ExportReadinessLevel;
 import uk.co.hsim.assetaudit.export.ExportSnapshot;
 import uk.co.hsim.assetaudit.importfile.AndroidDocumentSource;
+import uk.co.hsim.assetaudit.hardening.DiagnosticRedactor;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormat;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormatDetector;
 import uk.co.hsim.assetaudit.importfile.CreatedAuditSession;
@@ -155,7 +157,14 @@ public class MainActivity extends AppCompatActivity {
         renderLoading();
         appContainer.executors.diskIO().execute(() -> {
             appContainer.appStartupService.initialiseApplication();
+            appContainer.diagnosticRetentionService.applyDefaultRetention();
             activeSession = appContainer.auditSessionService.getActiveSession();
+            if (activeSession != null) {
+                List<String> consistencyWarnings = appContainer.databaseConsistencyService.checkSession(activeSession.sessionId);
+                for (String warning : consistencyWarnings) {
+                    appContainer.diagnosticService.logWarning("Database", warning);
+                }
+            }
             loadScannerSettingsOnDisk();
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
             appContainer.executors.mainThread(this::renderCurrentScreen);
@@ -1275,10 +1284,11 @@ public class MainActivity extends AppCompatActivity {
         renderCurrentScreen();
         appContainer.executors.diskIO().execute(() -> {
             ExportOptions options = ExportOptions.defaults(exportModeFor(snapshot.preview));
+            ExportDestinationSummary destination = exportDestinationSummaryFor(uri);
             OperationResult<ExportPackageResult> packageResult = appContainer.exportPackageService
                     .writePackage(getContentResolver(), uri, snapshot, options);
             OperationResult<String> completion = packageResult.isSuccess()
-                    ? appContainer.exportCompletionService.recordSuccess(snapshot, options, packageResult.getValue(), uri.toString())
+                    ? appContainer.exportCompletionService.recordSuccess(snapshot, options, packageResult.getValue(), destination)
                     : OperationResult.fail(packageResult.getErrorCode(), packageResult.getMessage());
             recentDiagnostics = appContainer.diagnosticService.listRecent(8);
             List<ExportRunEntity> runs = appContainer.database.exportRunDao()
@@ -1311,7 +1321,25 @@ public class MainActivity extends AppCompatActivity {
         if (name.trim().isEmpty()) {
             name = "asset-audit";
         }
+        if (name.length() > 48) {
+            name = name.substring(0, 48);
+        }
         return name + "_" + snapshot.packageId.substring(0, 8) + ".zip";
+    }
+
+    private ExportDestinationSummary exportDestinationSummaryFor(Uri uri) {
+        String displayName = uri == null ? "export.zip" : uri.getLastPathSegment();
+        try (Cursor cursor = uri == null ? null : getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0) {
+                    displayName = cursor.getString(nameIndex);
+                }
+            }
+        }
+        DiagnosticRedactor redactor = new DiagnosticRedactor();
+        String safeName = redactor.safeDisplayName(displayName);
+        return new ExportDestinationSummary(safeName, redactor.exportDestinationSummary(uri, safeName));
     }
 
     private void renderSettings() {
@@ -1385,6 +1413,18 @@ public class MainActivity extends AppCompatActivity {
             String profileNameValue = profileName.getText().toString();
             String intentActionValue = intentAction.getText().toString();
             String intentCategoryValue = intentCategory.getText().toString();
+            OperationResult<String> validation = appContainer.settingsValidationService.validate(
+                    getPackageName(),
+                    unassignedValue,
+                    exportValue,
+                    profileNameValue,
+                    intentActionValue,
+                    intentCategoryValue
+            );
+            if (!validation.isSuccess()) {
+                Toast.makeText(this, validation.getMessage(), Toast.LENGTH_LONG).show();
+                return;
+            }
             appContainer.executors.diskIO().execute(() -> {
             appContainer.settingsService.setBooleanSetting(SettingsKeys.REQUIRE_MOVEMENT_CONFIRMATION, movementValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.ALLOW_MANUAL_BARCODE_ENTRY, manualValue);

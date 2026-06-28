@@ -7,12 +7,20 @@ import java.util.Map;
 import uk.co.hsim.assetaudit.domain.rules.BarcodeNormalizer;
 
 public final class ScannerPayloadParser {
+    private final ScannerIntentValidator intentValidator;
+
+    public ScannerPayloadParser() {
+        this(new ScannerIntentValidator());
+    }
+
+    public ScannerPayloadParser(ScannerIntentValidator intentValidator) {
+        this.intentValidator = intentValidator;
+    }
+
     public ParseResult parse(Intent intent, long receivedAtUtc) {
-        if (intent == null) {
-            return ParseResult.ignored("Missing intent");
-        }
-        if (!DataWedgeConstants.ACTION_SCAN.equals(intent.getAction())) {
-            return ParseResult.ignored("Unexpected action");
+        ScannerPayloadValidationResult validation = intentValidator.validate(intent);
+        if (!validation.isValid()) {
+            return ParseResult.ignored(validation.getReason());
         }
         String data = intent.getStringExtra(DataWedgeConstants.EXTRA_DATA_STRING);
         String labelType = intent.getStringExtra(DataWedgeConstants.EXTRA_LABEL_TYPE);

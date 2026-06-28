@@ -20,11 +20,14 @@ import uk.co.hsim.assetaudit.scanner.ScannerEventRouter;
 import uk.co.hsim.assetaudit.scanner.ScannerPayloadParser;
 import uk.co.hsim.assetaudit.service.AppStartupService;
 import uk.co.hsim.assetaudit.service.AuditSessionService;
+import uk.co.hsim.assetaudit.service.DatabaseConsistencyService;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
 import uk.co.hsim.assetaudit.service.DiagnosticService;
+import uk.co.hsim.assetaudit.service.DiagnosticRetentionService;
 import uk.co.hsim.assetaudit.service.ExceptionResolutionService;
 import uk.co.hsim.assetaudit.service.ScanProcessor;
 import uk.co.hsim.assetaudit.service.SettingsService;
+import uk.co.hsim.assetaudit.service.SettingsValidationService;
 import uk.co.hsim.assetaudit.util.clock.Clock;
 import uk.co.hsim.assetaudit.util.clock.SystemClock;
 import uk.co.hsim.assetaudit.util.device.AndroidDeviceInfoProvider;
@@ -38,8 +41,11 @@ public final class AppContainer {
     public final AppExecutors executors;
     public final AuditDatabase database;
     public final SettingsService settingsService;
+    public final SettingsValidationService settingsValidationService;
     public final DiagnosticService diagnosticService;
+    public final DiagnosticRetentionService diagnosticRetentionService;
     public final AuditSessionService auditSessionService;
+    public final DatabaseConsistencyService databaseConsistencyService;
     public final DepartmentSummaryService departmentSummaryService;
     public final ImportSessionService importSessionService;
     public final ScanProcessor scanProcessor;
@@ -63,12 +69,15 @@ public final class AppContainer {
         deviceInfoProvider = new AndroidDeviceInfoProvider(appContext);
 
         settingsService = new SettingsService(new RoomSettingsRepository(database.appSettingDao()), clock);
+        settingsValidationService = new SettingsValidationService();
         diagnosticService = new DiagnosticService(
                 new RoomDiagnosticRepository(database.diagnosticLogDao()),
                 clock,
                 new AndroidAppLogger()
         );
+        diagnosticRetentionService = new DiagnosticRetentionService(database.diagnosticLogDao(), clock);
         auditSessionService = new AuditSessionService(new RoomAuditSessionRepository(database.auditSessionDao()));
+        databaseConsistencyService = new DatabaseConsistencyService(database);
         departmentSummaryService = new DepartmentSummaryService(
                 new RoomDepartmentAuditRepository(database.departmentAuditDao()),
                 new RoomAssetRepository(database.assetDao())

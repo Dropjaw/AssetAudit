@@ -2,6 +2,7 @@ package uk.co.hsim.assetaudit.scanner;
 
 import uk.co.hsim.assetaudit.app.AppExecutors;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
+import uk.co.hsim.assetaudit.hardening.DiagnosticRedactor;
 import uk.co.hsim.assetaudit.service.DepartmentAuditContext;
 import uk.co.hsim.assetaudit.service.DepartmentSummaryService;
 import uk.co.hsim.assetaudit.service.DiagnosticService;
@@ -29,6 +30,7 @@ public final class ScannerEventRouter {
     private final ScanProcessor scanProcessor;
     private final DepartmentSummaryService departmentSummaryService;
     private final DiagnosticService diagnosticService;
+    private final DiagnosticRedactor diagnosticRedactor;
     private final Clock clock;
     private final long debounceMs;
     private String lastData;
@@ -41,6 +43,7 @@ public final class ScannerEventRouter {
         this.scanProcessor = scanProcessor;
         this.departmentSummaryService = departmentSummaryService;
         this.diagnosticService = diagnosticService;
+        this.diagnosticRedactor = new DiagnosticRedactor();
         this.clock = clock;
         this.debounceMs = debounceMs;
     }
@@ -70,7 +73,7 @@ public final class ScannerEventRouter {
                     selectedDepartment
             );
             diagnosticService.logInfo("Scanner", "DATAWEDGE_SCAN result=" + result.getResultType()
-                    + " tag=" + safeTag(payload.getData())
+                    + " " + diagnosticRedactor.scannerPayloadSummary(payload)
                     + " label=" + payload.getSymbology());
             ScannerRouteResult routed = ScannerRouteResult.processed(payload, result, context);
             executors.mainThread(() -> callback.onScannerRouteResult(routed));
@@ -112,10 +115,4 @@ public final class ScannerEventRouter {
         lastAcceptedAtUtc = clock.nowUtcMillis();
     }
 
-    private String safeTag(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.length() <= 12 ? value : value.substring(0, 12) + "...";
-    }
 }

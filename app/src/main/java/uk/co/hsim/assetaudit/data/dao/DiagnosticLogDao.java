@@ -19,4 +19,7 @@ public interface DiagnosticLogDao {
 
     @Query("DELETE FROM diagnostic_log WHERE timestamp_utc < :thresholdUtc")
     int deleteOlderThan(long thresholdUtc);
+
+    @Query("DELETE FROM diagnostic_log WHERE log_id NOT IN (SELECT log_id FROM diagnostic_log ORDER BY timestamp_utc DESC, log_id DESC LIMIT :keepCount)")
+    int keepMostRecent(int keepCount);
 }

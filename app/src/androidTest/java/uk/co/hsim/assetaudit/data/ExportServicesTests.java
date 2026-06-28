@@ -25,6 +25,7 @@ import uk.co.hsim.assetaudit.domain.enums.DepartmentAuditStatus;
 import uk.co.hsim.assetaudit.domain.enums.EventKind;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.export.ExportCompletionService;
+import uk.co.hsim.assetaudit.export.ExportDestinationSummary;
 import uk.co.hsim.assetaudit.export.ExportFileRecord;
 import uk.co.hsim.assetaudit.export.ExportMode;
 import uk.co.hsim.assetaudit.export.ExportOptions;
@@ -88,20 +89,23 @@ public class ExportServicesTests {
                 snapshot.getValue().packageId,
                 "{\"packageId\":\"" + snapshot.getValue().packageId + "\"}",
                 Arrays.asList(
-                        new ExportFileRecord("updated_assets.csv", "text/csv", 1, "a"),
-                        new ExportFileRecord("export_manifest.json", "application/json", 1, "b")
+                        new ExportFileRecord("updated_assets.csv", "text/csv", 1,
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                        new ExportFileRecord("export_manifest.json", "application/json", 1,
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
                 )
         );
         OperationResult<String> result = completionService.recordSuccess(
                 snapshot.getValue(),
                 ExportOptions.defaults(ExportMode.FINAL),
                 packageResult,
-                "content://export.zip"
+                new ExportDestinationSummary("export.zip", "export.zip (destination #abcd1234)")
         );
 
         assertTrue(result.isSuccess());
         List<ExportRunEntity> runs = database.exportRunDao().listRecentRuns(SESSION_ID, 5);
         assertEquals(1, runs.size());
+        assertEquals("export.zip (destination #abcd1234)", runs.get(0).destinationDisplayName);
         assertEquals(2, database.exportRunDao().countFiles(runs.get(0).exportRunId));
         assertEquals(1, countSessionExportedEvents());
     }

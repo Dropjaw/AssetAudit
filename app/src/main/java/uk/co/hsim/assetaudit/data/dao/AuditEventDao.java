@@ -37,6 +37,9 @@ public interface AuditEventDao {
     @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND selected_department = :department AND event_kind = :eventKind")
     int countByDepartmentAndKind(String sessionId, String department, EventKind eventKind);
 
+    @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND asset_tag_id = :assetTagId AND event_kind = :eventKind")
+    int countByAssetAndKind(String sessionId, String assetTagId, EventKind eventKind);
+
     @Query("SELECT * FROM audit_event WHERE session_id = :sessionId AND asset_tag_id = :assetTagId ORDER BY timestamp_utc DESC, event_id DESC LIMIT :limit")
     List<AuditEventEntity> listRecentByAssetTag(String sessionId, String assetTagId, int limit);
 }

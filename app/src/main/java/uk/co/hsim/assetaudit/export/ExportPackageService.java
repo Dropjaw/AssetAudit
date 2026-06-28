@@ -18,12 +18,20 @@ public final class ExportPackageService {
     private final CsvReportWriter csvWriter;
     private final JsonManifestWriter manifestWriter;
     private final DeviceInfoProvider deviceInfoProvider;
+    private final ExportManifestVerifier manifestVerifier;
 
     public ExportPackageService(CsvReportWriter csvWriter, JsonManifestWriter manifestWriter,
                                 DeviceInfoProvider deviceInfoProvider) {
+        this(csvWriter, manifestWriter, deviceInfoProvider, new ExportManifestVerifier());
+    }
+
+    public ExportPackageService(CsvReportWriter csvWriter, JsonManifestWriter manifestWriter,
+                                DeviceInfoProvider deviceInfoProvider,
+                                ExportManifestVerifier manifestVerifier) {
         this.csvWriter = csvWriter;
         this.manifestWriter = manifestWriter;
         this.deviceInfoProvider = deviceInfoProvider;
+        this.manifestVerifier = manifestVerifier;
     }
 
     public OperationResult<ExportPackageResult> writePackage(ContentResolver resolver, Uri uri,
@@ -37,6 +45,10 @@ public final class ExportPackageService {
             String manifest = manifestWriter.write(snapshot, options, records, deviceInfoProvider);
             byte[] manifestBytes = manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             records.add(new ExportFileRecord("export_manifest.json", "application/json", 1, sha256(manifestBytes)));
+            OperationResult<String> verification = manifestVerifier.verify(records);
+            if (!verification.isSuccess()) {
+                return OperationResult.fail(verification.getErrorCode(), verification.getMessage());
+            }
             entries.add(new EntryBytes("export_manifest.json", "application/json", 1, manifestBytes));
             OutputStream output = resolver.openOutputStream(uri, "w");
             if (output == null) {
