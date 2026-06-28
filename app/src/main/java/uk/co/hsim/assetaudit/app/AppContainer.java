@@ -8,6 +8,12 @@ import uk.co.hsim.assetaudit.data.repository.RoomAuditSessionRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDepartmentAuditRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomDiagnosticRepository;
 import uk.co.hsim.assetaudit.data.repository.RoomSettingsRepository;
+import uk.co.hsim.assetaudit.export.CsvReportWriter;
+import uk.co.hsim.assetaudit.export.ExportCompletionService;
+import uk.co.hsim.assetaudit.export.ExportPackageService;
+import uk.co.hsim.assetaudit.export.ExportSnapshotBuilder;
+import uk.co.hsim.assetaudit.export.JsonManifestWriter;
+import uk.co.hsim.assetaudit.export.ReportPreviewService;
 import uk.co.hsim.assetaudit.importfile.ImportSessionService;
 import uk.co.hsim.assetaudit.scanner.DataWedgeProfileManager;
 import uk.co.hsim.assetaudit.scanner.ScannerEventRouter;
@@ -41,6 +47,10 @@ public final class AppContainer {
     public final ScannerPayloadParser scannerPayloadParser;
     public final ScannerEventRouter scannerEventRouter;
     public final DataWedgeProfileManager dataWedgeProfileManager;
+    public final ReportPreviewService reportPreviewService;
+    public final ExportSnapshotBuilder exportSnapshotBuilder;
+    public final ExportPackageService exportPackageService;
+    public final ExportCompletionService exportCompletionService;
     public final AppStartupService appStartupService;
     public final DeviceInfoProvider deviceInfoProvider;
     public final Clock clock;
@@ -94,6 +104,18 @@ public final class AppContainer {
                 750L
         );
         dataWedgeProfileManager = new DataWedgeProfileManager(appContext);
+        reportPreviewService = new ReportPreviewService(database, clock);
+        exportSnapshotBuilder = new ExportSnapshotBuilder(database, reportPreviewService, clock);
+        exportPackageService = new ExportPackageService(
+                new CsvReportWriter(),
+                new JsonManifestWriter(),
+                deviceInfoProvider
+        );
+        exportCompletionService = new ExportCompletionService(
+                database,
+                deviceInfoProvider,
+                new LocalUserIdentityProvider()
+        );
         appStartupService = new AppStartupService(settingsService, diagnosticService, deviceInfoProvider);
     }
 

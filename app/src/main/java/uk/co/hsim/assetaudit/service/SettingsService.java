@@ -65,6 +65,7 @@ public final class SettingsService {
         settings.put(SettingsKeys.ALLOW_NEW_ASSET_CREATION, "true");
         settings.put(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, "Unassigned / Blank Department");
         settings.put(SettingsKeys.DEFAULT_EXPORT_FORMAT, "CSV");
+        settings.put(SettingsKeys.ALLOW_DRAFT_EXPORTS, "false");
         settings.put(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, "true");
         settings.put(SettingsKeys.LIVE_SCANNER_ENABLED, "true");
         settings.put(SettingsKeys.DATAWEDGE_PROFILE_NAME, DataWedgeConstants.PROFILE_NAME);

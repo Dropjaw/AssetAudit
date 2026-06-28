@@ -19,6 +19,9 @@ public interface AuditEventDao {
     @Query("SELECT * FROM audit_event WHERE session_id = :sessionId ORDER BY timestamp_utc ASC, event_id ASC")
     List<AuditEventEntity> listBySession(String sessionId);
 
+    @Query("SELECT * FROM audit_event WHERE session_id = :sessionId ORDER BY timestamp_utc DESC, event_id DESC")
+    List<AuditEventEntity> listBySessionNewestFirst(String sessionId);
+
     @Query("SELECT * FROM audit_event WHERE session_id = :sessionId AND asset_tag_id = :assetTagId ORDER BY timestamp_utc ASC, event_id ASC")
     List<AuditEventEntity> listByAssetTag(String sessionId, String assetTagId);
 
@@ -27,6 +30,9 @@ public interface AuditEventDao {
 
     @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND selected_department = :department AND result_type = :resultType")
     int countByDepartmentAndResult(String sessionId, String department, ScanResultType resultType);
+
+    @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND result_type = :resultType")
+    int countByResult(String sessionId, ScanResultType resultType);
 
     @Query("SELECT COUNT(*) FROM audit_event WHERE session_id = :sessionId AND selected_department = :department AND event_kind = :eventKind")
     int countByDepartmentAndKind(String sessionId, String department, EventKind eventKind);

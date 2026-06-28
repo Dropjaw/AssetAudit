@@ -33,8 +33,15 @@ import uk.co.hsim.assetaudit.data.db.AuditDatabase;
 import uk.co.hsim.assetaudit.data.entity.AssetEntity;
 import uk.co.hsim.assetaudit.data.entity.AuditSessionEntity;
 import uk.co.hsim.assetaudit.data.entity.DiagnosticLogEntity;
+import uk.co.hsim.assetaudit.data.entity.ExportRunEntity;
 import uk.co.hsim.assetaudit.domain.results.OperationResult;
 import uk.co.hsim.assetaudit.domain.enums.ScanResultType;
+import uk.co.hsim.assetaudit.export.ExportMode;
+import uk.co.hsim.assetaudit.export.ExportOptions;
+import uk.co.hsim.assetaudit.export.ExportPackageResult;
+import uk.co.hsim.assetaudit.export.ExportPreview;
+import uk.co.hsim.assetaudit.export.ExportReadinessLevel;
+import uk.co.hsim.assetaudit.export.ExportSnapshot;
 import uk.co.hsim.assetaudit.importfile.AndroidDocumentSource;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormat;
 import uk.co.hsim.assetaudit.importfile.AssetFileFormatDetector;
@@ -72,6 +79,7 @@ public class MainActivity extends AppCompatActivity {
     private AuditSessionEntity activeSession;
     private List<DiagnosticLogEntity> recentDiagnostics;
     private ActivityResultLauncher<String[]> openAssetFileLauncher;
+    private ActivityResultLauncher<String> createExportPackageLauncher;
     private ImportPreview currentImportPreview;
     private CreatedAuditSession createdAuditSession;
     private String importError;
@@ -97,6 +105,14 @@ public class MainActivity extends AppCompatActivity {
     private boolean newAssetFormVisible;
     private FinishDepartmentPreview finishDepartmentPreview;
     private DuplicateReviewState duplicateReviewState;
+    private ExportPreview currentExportPreview;
+    private ExportSnapshot pendingExportSnapshot;
+    private ExportPackageResult lastExportPackageResult;
+    private List<ExportRunEntity> recentExportRuns = new ArrayList<>();
+    private boolean exportPreviewLoading;
+    private boolean exportPreparing;
+    private boolean exportWriting;
+    private String exportError;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -121,6 +137,8 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         openAssetFileLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), this::onAssetFileSelected);
+        createExportPackageLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/zip"),
+                this::onExportPackageDestinationSelected);
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
@@ -214,11 +232,7 @@ public class MainActivity extends AppCompatActivity {
                 renderAuditScan();
                 break;
             case REPORTS:
-                renderPlaceholder(
-                        "Reports and export",
-                        "Updated asset files, summaries, and exception reports will be generated after import and audit workflows exist.",
-                        "Export buttons are disabled until a later phase."
-                );
+                renderReports();
                 break;
             case SETTINGS:
                 renderSettings();
@@ -1085,6 +1099,221 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void renderReports() {
+        if (activeSession == null) {
+            renderPlaceholder(
+                    "Reports and export",
+                    "Export packages are available after an import creates an active local session.",
+                    "No imported session is available yet."
+            );
+            return;
+        }
+        if (currentExportPreview == null && !exportPreviewLoading) {
+            loadExportPreview();
+        }
+        addSectionHeading("Export readiness");
+        if (exportPreviewLoading) {
+            addBody("Checking audit state and report counts...");
+        }
+        if (exportError != null) {
+            addBody(exportError);
+        }
+        if (currentExportPreview != null) {
+            addKeyValue("Session", currentExportPreview.getAuditName());
+            addKeyValue("Readiness", currentExportPreview.getReadiness().name());
+            addKeyValue("Total assets", String.valueOf(currentExportPreview.getTotalAssets()));
+            addKeyValue("Remaining", String.valueOf(currentExportPreview.getRemainingAssets()));
+            addKeyValue("Exception assets", String.valueOf(currentExportPreview.getExceptionAssets()));
+            addKeyValue("Duplicate scans", String.valueOf(currentExportPreview.getDuplicateScans()));
+            addKeyValue("Invalid scans", String.valueOf(currentExportPreview.getInvalidScans()));
+
+            if (!currentExportPreview.getWarnings().isEmpty()) {
+                addSectionHeading("Warnings");
+                for (String warning : currentExportPreview.getWarnings()) {
+                    addBody(warning);
+                }
+            }
+
+            addSectionHeading("Department summary");
+            int shown = Math.min(8, currentExportPreview.getDepartments().size());
+            for (int i = 0; i < shown; i++) {
+                uk.co.hsim.assetaudit.data.entity.DepartmentAuditEntity department =
+                        currentExportPreview.getDepartments().get(i);
+                addBody(department.departmentName + ": " + department.scannedCount + " scanned / "
+                        + department.expectedCount + " expected, " + department.status.name());
+            }
+            if (currentExportPreview.getDepartments().size() > shown) {
+                addBody("Additional departments: " + (currentExportPreview.getDepartments().size() - shown));
+            }
+
+            Button export = button(exportButtonText());
+            export.setEnabled(canStartExport(currentExportPreview) && !exportPreparing && !exportWriting);
+            export.setOnClickListener(v -> prepareExportPackage());
+            content.addView(export, matchWrap());
+        }
+
+        if (exportPreparing) {
+            addBody("Preparing export snapshot...");
+        }
+        if (exportWriting) {
+            addBody("Writing export package...");
+        }
+        if (lastExportPackageResult != null) {
+            addSectionHeading("Last export");
+            addKeyValue("Package ID", lastExportPackageResult.getPackageId());
+            addKeyValue("Files", String.valueOf(lastExportPackageResult.getFiles().size()));
+        }
+
+        addSectionHeading("Recent export runs");
+        if (recentExportRuns == null || recentExportRuns.isEmpty()) {
+            addBody("No export packages have been recorded for this session.");
+        } else {
+            DateFormat dateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM);
+            for (ExportRunEntity run : recentExportRuns) {
+                addBody(dateFormat.format(new Date(run.exportedAtUtc)) + " - "
+                        + run.exportMode + " - " + run.readiness);
+            }
+        }
+
+        Button refresh = button("Refresh Preview");
+        refresh.setEnabled(!exportPreviewLoading && !exportPreparing && !exportWriting);
+        refresh.setOnClickListener(v -> {
+            currentExportPreview = null;
+            exportError = null;
+            loadExportPreview();
+            renderCurrentScreen();
+        });
+        content.addView(refresh, matchWrap());
+        addBackButton();
+    }
+
+    private void loadExportPreview() {
+        if (activeSession == null) {
+            return;
+        }
+        exportPreviewLoading = true;
+        appContainer.executors.diskIO().execute(() -> {
+            boolean allowDraft = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, false);
+            OperationResult<ExportPreview> result = appContainer.reportPreviewService
+                    .buildPreview(activeSession.sessionId, allowDraft);
+            List<ExportRunEntity> runs = appContainer.database.exportRunDao()
+                    .listRecentRuns(activeSession.sessionId, 5);
+            appContainer.executors.mainThread(() -> {
+                exportPreviewLoading = false;
+                recentExportRuns = runs;
+                if (result.isSuccess()) {
+                    currentExportPreview = result.getValue();
+                    exportError = null;
+                } else {
+                    currentExportPreview = null;
+                    exportError = result.getMessage();
+                }
+                renderCurrentScreen();
+            });
+        });
+    }
+
+    private boolean canStartExport(ExportPreview preview) {
+        return preview.getReadiness() != ExportReadinessLevel.BLOCKED;
+    }
+
+    private String exportButtonText() {
+        if (exportPreparing) {
+            return "Preparing Export...";
+        }
+        if (exportWriting) {
+            return "Writing Export...";
+        }
+        if (currentExportPreview == null) {
+            return "Create Export Package";
+        }
+        if (currentExportPreview.getReadiness() == ExportReadinessLevel.DRAFT_INCOMPLETE) {
+            return "Create Draft Export Package";
+        }
+        return "Create Final Export Package";
+    }
+
+    private void prepareExportPackage() {
+        if (activeSession == null || exportPreparing || exportWriting) {
+            return;
+        }
+        exportPreparing = true;
+        exportError = null;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            boolean allowDraft = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, false);
+            OperationResult<ExportSnapshot> result = appContainer.exportSnapshotBuilder
+                    .build(activeSession.sessionId, allowDraft);
+            appContainer.executors.mainThread(() -> {
+                exportPreparing = false;
+                if (result.isSuccess()) {
+                    pendingExportSnapshot = result.getValue();
+                    createExportPackageLauncher.launch(exportFileName(pendingExportSnapshot));
+                } else {
+                    pendingExportSnapshot = null;
+                    exportError = result.getMessage();
+                    renderCurrentScreen();
+                }
+            });
+        });
+    }
+
+    private void onExportPackageDestinationSelected(Uri uri) {
+        if (uri == null) {
+            pendingExportSnapshot = null;
+            renderCurrentScreen();
+            return;
+        }
+        ExportSnapshot snapshot = pendingExportSnapshot;
+        if (snapshot == null) {
+            exportError = "Export snapshot is no longer available. Refresh and try again.";
+            renderCurrentScreen();
+            return;
+        }
+        exportWriting = true;
+        exportError = null;
+        renderCurrentScreen();
+        appContainer.executors.diskIO().execute(() -> {
+            ExportOptions options = ExportOptions.defaults(exportModeFor(snapshot.preview));
+            OperationResult<ExportPackageResult> packageResult = appContainer.exportPackageService
+                    .writePackage(getContentResolver(), uri, snapshot, options);
+            OperationResult<String> completion = packageResult.isSuccess()
+                    ? appContainer.exportCompletionService.recordSuccess(snapshot, options, packageResult.getValue(), uri.toString())
+                    : OperationResult.fail(packageResult.getErrorCode(), packageResult.getMessage());
+            recentDiagnostics = appContainer.diagnosticService.listRecent(8);
+            List<ExportRunEntity> runs = appContainer.database.exportRunDao()
+                    .listRecentRuns(snapshot.session.sessionId, 5);
+            appContainer.executors.mainThread(() -> {
+                exportWriting = false;
+                pendingExportSnapshot = null;
+                recentExportRuns = runs;
+                if (packageResult.isSuccess() && completion.isSuccess()) {
+                    lastExportPackageResult = packageResult.getValue();
+                    currentExportPreview = null;
+                    Toast.makeText(this, completion.getValue(), Toast.LENGTH_SHORT).show();
+                } else {
+                    exportError = packageResult.isSuccess() ? completion.getMessage() : packageResult.getMessage();
+                }
+                renderCurrentScreen();
+            });
+        });
+    }
+
+    private ExportMode exportModeFor(ExportPreview preview) {
+        return preview.getReadiness() == ExportReadinessLevel.DRAFT_INCOMPLETE
+                ? ExportMode.DRAFT
+                : ExportMode.FINAL;
+    }
+
+    private String exportFileName(ExportSnapshot snapshot) {
+        String name = snapshot.session.auditName == null ? "asset-audit" : snapshot.session.auditName;
+        name = name.replaceAll("[^A-Za-z0-9._-]+", "_");
+        if (name.trim().isEmpty()) {
+            name = "asset-audit";
+        }
+        return name + "_" + snapshot.packageId.substring(0, 8) + ".zip";
+    }
+
     private void renderSettings() {
         addSectionHeading("Audit workflow defaults");
         CheckBox movement = checkbox("Confirm before moving assets between departments");
@@ -1093,6 +1322,7 @@ public class MainActivity extends AppCompatActivity {
         CheckBox diagnostics = checkbox("Enable local diagnostic logging");
         CheckBox liveScanner = checkbox("Enable Zebra DataWedge scanner");
         CheckBox scannerDiagnostics = checkbox("Enable scanner diagnostics");
+        CheckBox allowDraftExports = checkbox("Allow draft exports before every asset is resolved");
         EditText unassigned = editText("Unassigned department label");
         EditText exportFormat = editText("Default export format");
         EditText profileName = editText("DataWedge profile name");
@@ -1105,6 +1335,7 @@ public class MainActivity extends AppCompatActivity {
         content.addView(diagnostics);
         content.addView(liveScanner);
         content.addView(scannerDiagnostics);
+        content.addView(allowDraftExports);
         content.addView(unassigned, matchWrap());
         content.addView(exportFormat, matchWrap());
         content.addView(profileName, matchWrap());
@@ -1118,6 +1349,7 @@ public class MainActivity extends AppCompatActivity {
             boolean diagnosticsValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, true);
             boolean liveScannerValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.LIVE_SCANNER_ENABLED, true);
             boolean scannerDiagnosticsValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, true);
+            boolean allowDraftExportsValue = appContainer.settingsService.getBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, false);
             String unassignedValue = appContainer.settingsService.getStringSetting(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, "Unassigned / Blank Department");
             String exportValue = appContainer.settingsService.getStringSetting(SettingsKeys.DEFAULT_EXPORT_FORMAT, "CSV");
             String profileNameValue = appContainer.settingsService.getStringSetting(SettingsKeys.DATAWEDGE_PROFILE_NAME, DataWedgeConstants.PROFILE_NAME);
@@ -1130,6 +1362,7 @@ public class MainActivity extends AppCompatActivity {
                 diagnostics.setChecked(diagnosticsValue);
                 liveScanner.setChecked(liveScannerValue);
                 scannerDiagnostics.setChecked(scannerDiagnosticsValue);
+                allowDraftExports.setChecked(allowDraftExportsValue);
                 unassigned.setText(unassignedValue);
                 exportFormat.setText(exportValue);
                 profileName.setText(profileNameValue);
@@ -1146,6 +1379,7 @@ public class MainActivity extends AppCompatActivity {
             boolean diagnosticsValue = diagnostics.isChecked();
             boolean liveScannerValue = liveScanner.isChecked();
             boolean scannerDiagnosticsValue = scannerDiagnostics.isChecked();
+            boolean allowDraftExportsValue = allowDraftExports.isChecked();
             String unassignedValue = unassigned.getText().toString();
             String exportValue = exportFormat.getText().toString();
             String profileNameValue = profileName.getText().toString();
@@ -1158,6 +1392,7 @@ public class MainActivity extends AppCompatActivity {
             appContainer.settingsService.setBooleanSetting(SettingsKeys.DIAGNOSTIC_LOGGING_ENABLED, diagnosticsValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.LIVE_SCANNER_ENABLED, liveScannerValue);
             appContainer.settingsService.setBooleanSetting(SettingsKeys.SCANNER_DIAGNOSTICS_ENABLED, scannerDiagnosticsValue);
+            appContainer.settingsService.setBooleanSetting(SettingsKeys.ALLOW_DRAFT_EXPORTS, allowDraftExportsValue);
             appContainer.settingsService.setStringSetting(SettingsKeys.UNASSIGNED_DEPARTMENT_LABEL, unassignedValue);
             appContainer.settingsService.setStringSetting(SettingsKeys.DEFAULT_EXPORT_FORMAT, exportValue);
             appContainer.settingsService.setStringSetting(SettingsKeys.DATAWEDGE_PROFILE_NAME, profileNameValue);

@@ -24,6 +24,15 @@ public interface AssetDao {
     @Query("SELECT COUNT(*) FROM asset WHERE session_id = :sessionId")
     int countBySession(String sessionId);
 
+    @Query("SELECT * FROM asset WHERE session_id = :sessionId ORDER BY CASE WHEN source_row_number IS NULL THEN 1 ELSE 0 END, source_row_number ASC, created_during_audit ASC, asset_tag_id ASC")
+    List<AssetEntity> listBySessionForExport(String sessionId);
+
+    @Query("SELECT COUNT(*) FROM asset WHERE session_id = :sessionId AND audit_status = :auditStatus")
+    int countByStatus(String sessionId, AuditStatus auditStatus);
+
+    @Query("SELECT COUNT(*) FROM asset WHERE session_id = :sessionId AND created_during_audit = 1")
+    int countCreatedDuringAudit(String sessionId);
+
     @Query("SELECT COUNT(*) FROM asset WHERE session_id = :sessionId AND department = :department AND audit_status = :auditStatus")
     int countByDepartmentAndStatus(String sessionId, String department, AuditStatus auditStatus);
 

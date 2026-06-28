@@ -42,5 +42,6 @@ public class AuditDatabaseCreationTest {
         assertNotNull(database.lookupValueDao());
         assertNotNull(database.appSettingDao());
         assertNotNull(database.diagnosticLogDao());
+        assertNotNull(database.exportRunDao());
     }
 }
